@@ -1,3 +1,3 @@
-# Argus Neural Interface Bridge
+# Argus Neural Codec
 
-Argus Neural Interface Bridge provides bridging between the Argus Cybernetic Stacks ROS 2 graph and Argus Neural Interfaces
+The Argus Neural Codec package's nodes provide neural encoding and decoding for the argus cybernetics stack.
