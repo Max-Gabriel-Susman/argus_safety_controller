@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>argus_neural_interface_bridge</name>
+  <name>argus_neural_codec</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
   <maintainer email="gabe.susman@gmail.com">argus</maintainer>
