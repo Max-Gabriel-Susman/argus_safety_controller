@@ -22,7 +22,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             python3-rosdep python3-vcstool python3-colcon-common-extensions \
-            build-essential cmake git
+            build-essential cmake git rsync
 
           sudo rosdep init 2>/dev/null || true
           rosdep update
@@ -31,22 +31,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +u
           source /opt/ros/humble/setup.bash
+          set -u
 
           mkdir -p ws/src
-          # Put this repo in the workspace
           rsync -a --exclude ws ./ ws/src/argus_neural_interface_bridge
 
           cd ws/src
 
-          # micro-ROS client-side deps (source builds; consistent on arm64/x86)
           git clone -b humble https://github.com/ros2/rclc.git
           git clone -b humble https://github.com/micro-ROS/rmw_microxrcedds.git
           git clone -b humble https://github.com/micro-ROS/micro_ros_msgs.git
           git clone -b humble https://github.com/micro-ROS/micro_ros_utilities.git
           git clone -b humble https://github.com/micro-ROS/rosidl_typesupport_microxrcedds.git
 
-          # eProsima deps (pinned versions that work well with Humble)
           git clone -b v2.0.1 https://github.com/eProsima/Micro-CDR.git microcdr
           git clone -b v2.4.3 https://github.com/eProsima/Micro-XRCE-DDS-Client.git microxrcedds_client
 
@@ -54,10 +53,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +u
           source /opt/ros/humble/setup.bash
-          cd ws
+          set -u
 
-          # On some platforms rosdep doesn't know these keys; we build them from source above.
+          cd ws
           rosdep install --from-paths src --ignore-src -r -y \
             --skip-keys "rosidl_typesupport_microxrcedds_c rosidl_typesupport_microxrcedds_cpp"
 
@@ -65,7 +65,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +u
           source /opt/ros/humble/setup.bash
+          set -u
+
           cd ws
           colcon build --symlink-install --event-handlers console_direct+
 
@@ -73,7 +76,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +u
           source /opt/ros/humble/setup.bash
+          set -u
+
           source ws/install/setup.bash
           cd ws
           colcon test --event-handlers console_direct+
