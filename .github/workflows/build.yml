@@ -26,12 +26,12 @@ jobs:
         working-directory: /home/ros2_ws
         run: |
           . /opt/ros/foxy/setup.sh
-          colcon build --symlink-install --packages-up-to argus_neural_codec
+          colcon build --symlink-install --packages-up-to argus_neural_interface_bridge
 
       # - name: colcon test
       #   working-directory: /home/ros2_ws
       #   run: |
       #     . install/setup.sh
       #     colcon test --event-handlers console_direct+ \
-      #                  --packages-select argus_command_bridge
+      #                  --packages-select argus_neural_interface_bridge
       #     colcon test-result
