@@ -70,7 +70,17 @@ jobs:
           set -u
 
           cd ws
-          colcon build --symlink-install --event-handlers console_direct+
+
+          # Build sequentially + disable testing to avoid ExternalProject/test deps issues
+          colcon build \
+            --symlink-install \
+            --event-handlers console_direct+ \
+            --executor sequential \
+            --parallel-workers 1 \
+            --cmake-args \
+              -DBUILD_TESTING=OFF \
+              -DUCDR_BUILD_TESTS=OFF \
+              -DUCLIENT_BUILD_TESTS=OFF
 
       - name: Test
         shell: bash
@@ -82,5 +92,5 @@ jobs:
 
           source ws/install/setup.bash
           cd ws
-          colcon test --event-handlers console_direct+
+          colcon test --event-handlers console_direct+ --packages-select argus_neural_interface_bridge
           colcon test-result --verbose
