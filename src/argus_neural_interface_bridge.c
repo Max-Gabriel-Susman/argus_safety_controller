@@ -33,6 +33,44 @@ int main(int argc, const char *argv[]) {
   rclc_executor_t executor;
 
   rcl_ret_t rc = rclc_support_init(&support, 0, NULL, &allocator);
+  if (rc != RCL_RET_OK) {
+    return 1;
+  }
 
+  rc = rclc_node_init_default(&node, "argus_neural_interface_bridge", "", &support);
+  if (rc != RCL_RET_OK) {
+    return 2;
+  }
+
+  rc = rclc_publisher_init_default(
+    &pub,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt32),
+    "/argus/neural/interface/bridge/heartbeat");
+  if (rc != RCL_RET_OK) {
+    return 3; 
+  }
+
+  rc = rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(100), timer_cb);
+  if (rc != RCL_RET_OK) {
+    return 4;
+  }
+
+  rc = rclc_executor_init(&executor, &support.context, 1, &allocator);
+  if (rc != RCL_RET_OK) {
+    return 5;
+  }
+
+  rc = rclc_executor_add_timer(&executor, &timer);
+  if (rc != RCL_RET_OK) {
+    return 6;
+  }
+
+  msg.data = 0;
+
+  while (true) {
+    rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
+  }
+  
   return 0;
 }
