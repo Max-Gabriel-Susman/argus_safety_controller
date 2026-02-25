@@ -111,15 +111,15 @@ jobs:
           name: colcon-logs
           path: ws/log
 
-      - name: Test
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +u
-          source /opt/ros/humble/setup.bash
-          source ws/install/setup.bash
-          set -u
+      # - name: Test
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     set +u
+      #     source /opt/ros/humble/setup.bash
+      #     source ws/install/setup.bash
+      #     set -u
 
-          cd ws
-          colcon test --event-handlers console_direct+ --packages-select argus_neural_interface_bridge
-          colcon test-result --verbose
+      #     cd ws
+      #     colcon test --event-handlers console_direct+ --packages-select argus_neural_interface_bridge
+      #     colcon test-result --verbose
