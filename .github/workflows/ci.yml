@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup ROS 2
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-rosdep python3-vcstool python3-colcon-common-extensions \
+            build-essential cmake git
+
+          sudo rosdep init 2>/dev/null || true
+          rosdep update
+
+      - name: Create workspace and pull deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+
+          mkdir -p ws/src
+          # Put this repo in the workspace
+          rsync -a --exclude ws ./ ws/src/argus_neural_interface_bridge
+
+          cd ws/src
+
+          # micro-ROS client-side deps (source builds; consistent on arm64/x86)
+          git clone -b humble https://github.com/ros2/rclc.git
+          git clone -b humble https://github.com/micro-ROS/rmw_microxrcedds.git
+          git clone -b humble https://github.com/micro-ROS/micro_ros_msgs.git
+          git clone -b humble https://github.com/micro-ROS/micro_ros_utilities.git
+          git clone -b humble https://github.com/micro-ROS/rosidl_typesupport_microxrcedds.git
+
+          # eProsima deps (pinned versions that work well with Humble)
+          git clone -b v2.0.1 https://github.com/eProsima/Micro-CDR.git microcdr
+          git clone -b v2.4.3 https://github.com/eProsima/Micro-XRCE-DDS-Client.git microxrcedds_client
+
+      - name: rosdep install
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+          cd ws
+
+          # On some platforms rosdep doesn't know these keys; we build them from source above.
+          rosdep install --from-paths src --ignore-src -r -y \
+            --skip-keys "rosidl_typesupport_microxrcedds_c rosidl_typesupport_microxrcedds_cpp"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+          cd ws
+          colcon build --symlink-install --event-handlers console_direct+
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/humble/setup.bash
+          source ws/install/setup.bash
+          cd ws
+          colcon test --event-handlers console_direct+
+          colcon test-result --verbose
