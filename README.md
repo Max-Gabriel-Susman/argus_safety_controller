@@ -70,6 +70,12 @@ Flash the firmware:
 ros2 run micro_ros_setup flash_firmware.sh
 ```
 
+If you're having issues flashing the firmware you can assess the JTAG path with this command: 
+```bash
+cd ~/Documents/argus_embedded_ws
+openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -f target/stm32f4x.cfg -c "init; reset halt; shutdown"
+```
+
 After flashing disconnect or depower the board, move PWR_SEL to 5–6 and connect the board through the USB OTG2 port. 
 
 Check that the board enumerates; you should see someting like /dev/ttyACM0: 
