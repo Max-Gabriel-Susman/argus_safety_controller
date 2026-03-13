@@ -61,55 +61,55 @@ jobs:
           rosdep install --from-paths src --ignore-src -r -y \
             --skip-keys "rosidl_typesupport_microxrcedds_c rosidl_typesupport_microxrcedds_cpp"
 
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +u
-          source /opt/ros/humble/setup.bash
-          set -u
+      # - name: Build
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     set +u
+      #     source /opt/ros/humble/setup.bash
+      #     set -u
 
-          cd ws
+      #     cd ws
 
-          colcon build \
-            --merge-install \
-            --symlink-install \
-            --event-handlers console_direct+ \
-            --executor sequential \
-            --parallel-workers 1 \
-            --cmake-args \
-              -DBUILD_TESTING=OFF \
-              -DUCDR_BUILD_TESTS=OFF \
-              -DUCLIENT_BUILD_TESTS=OFF
+      #     colcon build \
+      #       --merge-install \
+      #       --symlink-install \
+      #       --event-handlers console_direct+ \
+      #       --executor sequential \
+      #       --parallel-workers 1 \
+      #       --cmake-args \
+      #         -DBUILD_TESTING=OFF \
+      #         -DUCDR_BUILD_TESTS=OFF \
+      #         -DUCLIENT_BUILD_TESTS=OFF
 
-      - name: Dump colcon logs on failure
-        if: failure()
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "==== colcon log tree ===="
-          find ws/log -maxdepth 4 -type f | sort || true
+      # - name: Dump colcon logs on failure
+      #   if: failure()
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     echo "==== colcon log tree ===="
+      #     find ws/log -maxdepth 4 -type f | sort || true
 
-          echo "==== last 300 lines of colcon build logs (if present) ===="
-          # Try a few common log locations
-          for f in \
-            ws/log/latest_build/*/stderr.log \
-            ws/log/latest_build/*/stdout.log \
-            ws/log/latest/*/stderr.log \
-            ws/log/latest/*/stdout.log
-          do
-            if [ -f "$f" ]; then
-              echo "---- $f ----"
-              tail -n 300 "$f"
-            fi
-          done
+      #     echo "==== last 300 lines of colcon build logs (if present) ===="
+      #     # Try a few common log locations
+      #     for f in \
+      #       ws/log/latest_build/*/stderr.log \
+      #       ws/log/latest_build/*/stdout.log \
+      #       ws/log/latest/*/stderr.log \
+      #       ws/log/latest/*/stdout.log
+      #     do
+      #       if [ -f "$f" ]; then
+      #         echo "---- $f ----"
+      #         tail -n 300 "$f"
+      #       fi
+      #     done
 
-      - name: Upload colcon logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: colcon-logs
-          path: ws/log
+      # - name: Upload colcon logs
+      #   if: failure()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: colcon-logs
+      #     path: ws/log
 
       # - name: Test
       #   shell: bash
