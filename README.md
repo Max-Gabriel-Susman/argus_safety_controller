@@ -80,10 +80,7 @@ unset RMW_IMPLEMENTATION
 
 Configure the firmware:
 ```bash
-cd ~/Documents/argus_embedded_ws
-source /opt/ros/$ROS_DISTRO/setup.bash
-source ~/Documents/argus_embedded_ws/install/local_setup.bash
-unset RMW_IMPLEMENTATION
+ros2 run micro_ros_setup configure_firmware.sh argus_neural_interface_bridge --transport serial-usb
 ```
 
 Build the firmware:
