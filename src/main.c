@@ -10,7 +10,7 @@
 
 #include <zephyr.h>
 #include <fs/fs.h>
-#include <fatfs/ff.h>
+#include <ff.h>
 
 #include <stdio.h>
 #include <unistd.h>
