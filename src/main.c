@@ -89,7 +89,7 @@ static void publish_text(const char *text) {
 static int ensure_sd_mounted(void) {
 	int rc;
 
-	if (sd_mount) {
+	if (sd_mounted) {
 		return 0;
 	}
 
