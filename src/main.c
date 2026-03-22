@@ -8,16 +8,20 @@
 
 #include <std_msgs/msg/string.h>
 
+#include <zephyr.h>
+#include <zephyr/fs/fs.h>
+#include <ff.h>
+
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
 #include <string.h>
 #include <stdbool.h>
 
-#include <zephyr.h>
-
 #define STRING_BUFFER_LEN 128
 #define PUBLISH_PERIOD_MS 500
+#define SD_MOUNT_POINT "/SD:"
+#define SD_TEST_FILE "/SD:/neural_test.csv"
 
 #define RCCHECK(fn) { \
 	rcl_ret_t temp_rc = fn; \
@@ -43,8 +47,17 @@ std_msgs__msg__String outgoing_neural_data;
 bool streaming_enabled = false;
 int sample_idx = 0;
 
-static bool command_equals(const std_msgs__msg__String * msg, const char * cmd)
-{
+// FATFS mount state
+static FATFS fat_fs;
+static struct fs_mount_t sd_mount = {
+	.type = FS_FATFS,
+	.fs_data = &fat_fs,
+	.mnt_point = SD_MOUNT_POINT,
+}
+
+static bool sd_mounted = false;
+
+static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
 	size_t cmd_len = strlen(cmd);
 
 	if (msg->data.data == NULL) {
@@ -58,8 +71,104 @@ static bool command_equals(const std_msgs__msg__String * msg, const char * cmd)
 	return strncmp(msg->data.data, cmd, cmd_len) == 0;
 }
 
-void neural_data_timer_callback(rcl_timer_t * timer, int64_t last_call_time)
-{
+static void publish_text(const char *text) {
+	size_t len = strlen(text);
+
+	if (len >= outgoing_neural_data.capacity) {
+		len = outgoing_neural_data.data.capacity - 1;
+	}
+
+	memcpy(outgoing_neural_data.data.data, text, len);
+	outgoing_neural_data.data.data[len] = '\0';
+	outgoing_neural_data.data.size = len;
+
+	RCSOFTCHECK(rcl_publish(&neural_data_publisher, &outgoing_neural_data, NULL));
+	printf("Published neural data: %s\n", outgoing_neural_data.data.data);
+}
+
+static int ensure_sd_mounted(void) {
+	int rc;
+
+	if (sd_mounted) {
+		return 0;
+	}
+
+	rc = fs_mount(&sd_mount);
+	if (rc == 0) {
+		sd_mounted = true;
+		printf("SD mounted at %s\n", SD_MOUNT_POINT);
+		return 0;
+	}
+
+	printf("fs_mount failed: %d\n", rc);
+	return rc;
+}
+
+static int read_first_data_line_from_sd(char *buf, size_t buf_len) {
+	struct fs_file_t file;
+	ssize_t bytes_read;
+	char ch;
+	size_t idx = 0;
+	int rc;
+	bool seen_newline = false;
+
+	rc = ensure_sd_mounted();
+	if (rc != 0) {
+		return rc;
+	}
+
+	fs_file_t_init(&file);
+
+	rc = fs_open(&file, SD_TEST_FILE, FS_O_READ);
+	if (rc < 0) {
+		printf("fs_open failed: %d\n", rc);
+		return rc;
+	}
+
+	// skip header line
+	while (1) {
+		bytes_read = fs_read(&file, &ch, 1);
+		if (bytes_read <= 0) {
+			fs_close(&file);
+			return -1;
+		}
+
+		if (ch == '\n') {
+			break;
+		}
+	}
+
+	// read first data line
+	while (idx < (buf_len -1)) {
+		bytes_read = fs_read(&file, &ch, 1);
+		if (bytes_read <= 0) {
+			break;
+		}
+
+		if (ch == '\r') {
+			continue;
+		}
+
+		if (ch == '\n') {
+			seen_newline = true;
+			break;
+		}
+
+		buf[idx++] = ch;
+	}
+
+	buf[idx] = '\0';
+
+	fs_close(&file);
+
+	if (idx == 0 && !seen_newline) {
+		return -2;
+	}
+
+	return 0;
+}
+
+void neural_data_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
 	(void) last_call_time;
 
 	if (timer == NULL || !streaming_enabled) {
@@ -105,9 +214,10 @@ void neural_data_timer_callback(rcl_timer_t * timer, int64_t last_call_time)
 	sample_idx++;
 }
 
-void control_subscription_callback(const void * msgin)
-{
-	const std_msgs__msg__String * msg = (const std_msgs__msg__String *)msgin;
+void control_subscription_callback(const void *msgin) {
+	const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
+    char line_buf[STRING_BUFFER_LEN];
+	int rc;
 
 	if (msg->data.data == NULL) {
 		return;
@@ -124,13 +234,20 @@ void control_subscription_callback(const void * msgin)
 	} else if (command_equals(msg, "reset")) {
 		sample_idx = 0;
 		printf("Sample index reset.\n");
+	} else if (command_equals(msg, "read_once")) {
+		rc = read_first_data_line_from_sd(line_buf, sizeof(line_buf));
+		if (rc == 0) {
+			publish_text(line_buf);
+		} else {
+			snprintf(line_buf, sizeof(line_buf), "sd_reade_error=%d", rc);
+			publish_text(line_buf);
+		}
 	} else {
 		printf("Unknown control command.\n");
 	}
 }
 
-void main(void)
-{
+void main(void) {
 	rmw_uros_set_custom_transport(
 		MICRO_ROS_FRAMING_REQUIRED,
 		(void *) &default_params,

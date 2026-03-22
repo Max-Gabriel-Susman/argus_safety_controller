@@ -15,6 +15,13 @@ Because the board selects its power source with a jumper, the **`PWR_SEL`** sett
 
 ## Roadmap
 
+- [ ] **Part B — SD Card Read Validation**
+  - Enable Zephyr filesystem support for FAT-formatted microSD storage
+  - Mount the SD card from the MCU
+  - Add a `read_once` control command
+  - Read one line from `neural_test.csv`
+  - Publish that line on `/argus/neural_interface_bridge/neural_data`
+
 ## Board Power Configuration
 
 For the Olimex STM32-E407:
@@ -62,6 +69,7 @@ This establishes the ROS 2 communication shape that will later be reused for SD-
 - `start` → begin timed dummy neural-data publishing
 - `stop` → stop publishing
 - `reset` → reset the dummy sample counter to zero
+- `read_once` → mount the SD card, open the test file, and publish one data line
 
 ## Usage
 
