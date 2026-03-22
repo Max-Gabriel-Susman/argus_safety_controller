@@ -53,7 +53,7 @@ static struct fs_mount_t sd_mount = {
 	.type = FS_FATFS,
 	.fs_data = &fat_fs,
 	.mnt_point = SD_MOUNT_POINT,
-}
+};
 
 static bool sd_mounted = false;
 
@@ -74,7 +74,7 @@ static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
 static void publish_text(const char *text) {
 	size_t len = strlen(text);
 
-	if (len >= outgoing_neural_data.capacity) {
+	if (len >= outgoing_neural_data.data.capacity) {
 		len = outgoing_neural_data.data.capacity - 1;
 	}
 
@@ -89,7 +89,7 @@ static void publish_text(const char *text) {
 static int ensure_sd_mounted(void) {
 	int rc;
 
-	if (sd_mounted) {
+	if (sd_mount) {
 		return 0;
 	}
 
