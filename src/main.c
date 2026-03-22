@@ -9,7 +9,7 @@
 #include <std_msgs/msg/string.h>
 
 #include <zephyr.h>
-#include <zephyr/fs/fs.h>
+#include <fs/fs.h>
 #include <ff.h>
 
 #include <stdio.h>
