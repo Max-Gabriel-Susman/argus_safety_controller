@@ -73,6 +73,7 @@ static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
 }
 
 static void publish_text(const char *text) {
+	printf("publish text invoked");
 	size_t len = strlen(text);
 
 	if (len >= outgoing_neural_data.data.capacity) {
@@ -106,6 +107,7 @@ static int ensure_sd_mounted(void) {
 }
 
 static int read_first_data_line_from_sd(char *buf, size_t buf_len) {
+	printf("read_first_data_line_from_sd invoked");
 	struct fs_file_t file;
 	ssize_t bytes_read;
 	char ch;
