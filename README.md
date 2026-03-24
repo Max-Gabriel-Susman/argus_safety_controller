@@ -22,6 +22,18 @@ Because the board selects its power source with a jumper, the **`PWR_SEL`** sett
   - Read one line from `neural_test.csv`
   - Publish that line on `/argus/neural_interface_bridge/neural_data`
 
+- [ ] **Part C — SD-Backed Neural Playback**
+  - Replace dummy neural sample generation with file-backed playback from the SD card
+  - Add looped playback behavior at end-of-file
+  - Support control commands:
+    - `start`
+    - `stop`
+    - `reset`
+    - `read_once`
+    - `loop_on`
+    - `loop_off`
+  - Publish detailed SD status messages to simplify debugging
+
 ## Board Power Configuration
 
 For the Olimex STM32-E407:
@@ -70,6 +82,8 @@ This establishes the ROS 2 communication shape that will later be reused for SD-
 - `stop` → stop publishing
 - `reset` → reset the dummy sample counter to zero
 - `read_once` → mount the SD card, open the test file, and publish one data line
+- `loop_on` → enable looped playback at end-of-file
+- `loop_off` → disable looped playback
 
 ## Usage
 

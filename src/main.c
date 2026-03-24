@@ -53,6 +53,7 @@ static struct fs_mount_t sd_mount = {
 	.type = FS_FATFS,
 	.fs_data = &fat_fs,
 	.mnt_point = SD_MOUNT_POINT,
+	.flags = FS_MOUNT_FLAG_USE_DISK_ACCESS,
 };
 
 static bool sd_mounted = false;
@@ -239,7 +240,7 @@ void control_subscription_callback(const void *msgin) {
 		if (rc == 0) {
 			publish_text(line_buf);
 		} else {
-			snprintf(line_buf, sizeof(line_buf), "sd_reade_error=%d", rc);
+			snprintf(line_buf, sizeof(line_buf), "sd_read_error=%d", rc);
 			publish_text(line_buf);
 		}
 	} else {
