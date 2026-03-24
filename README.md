@@ -109,6 +109,11 @@ If dfu-util -l shows Internal Flash on alt=0, flash with:
 dfu-util -a 0 -s 0x08000000:leave -D /full/path/to/zephyr.bin
 ```
 
+It might looks something like this:
+```bash
+dfu-util -a 0 -s 0x08000000:leave -D /home/argus/Documents/argus_embedded_ws/firmware/build/zephyr/zephyr.bin
+```
+
 After flashing:
 
 remove power
