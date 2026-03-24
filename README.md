@@ -1,21 +1,22 @@
 # Argus Neural Interface Bridge
 
-The **Argus Neural Interface Bridge** is a **micro-ROS client** for the Argus Neural Interface MCU. It is intended to let the embedded device publish telemetry into the Argus ROS 2 graph and receive inbound commands from the host side.
+The **Argus Neural Interface Bridge** is a **micro-ROS client** for the Argus Neural Interface MCU. It is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Future efforts will be towards safely and receive inbound commands from the host side.
 
 This project currently targets the **Olimex STM32-E407** running the **Zephyr** RTOS.
 
 ## Overview
 
-The development workflow uses two different connection modes on the STM32 board:
+The development workflow uses three different connection modes on the STM32 board:
 
-- **JTAG/SWD mode** for flashing firmware
+- **JTAG/SWD mode** for debugger-based flashing
 - **USB OTG2 serial mode** for runtime communication with the micro-ROS Agent
+- **USB OTG1 DFU mode** for USB bootloader flashing through the STM32 system bootloader
 
-Because the board selects its power source with a jumper, the **`PWR_SEL`** setting must be changed depending on whether you are flashing or running the firmware.
+Because the board selects both its power source and boot mode with jumpers, the **`PWR_SEL`** and **boot jumper** settings must match the mode you are using.
 
 ## Roadmap
 
-- [ ] **Part B — SD Card Read Validation**
+- [x] **Part B — SD Card Read Validation**
   - Enable Zephyr filesystem support for FAT-formatted microSD storage
   - Mount the SD card from the MCU
   - Add a `read_once` control command
@@ -30,8 +31,6 @@ Because the board selects its power source with a jumper, the **`PWR_SEL`** sett
     - `stop`
     - `reset`
     - `read_once`
-    - `loop_on`
-    - `loop_off`
   - Publish detailed SD status messages to simplify debugging
 
 ## Board Power Configuration
@@ -40,36 +39,34 @@ For the Olimex STM32-E407:
 
 - **`PWR_SEL = 3–4`** → power from **JTAG/SWD**
 - **`PWR_SEL = 5–6`** → power from **USB OTG2**
+- **`PWR_SEL = 7–8`** → power from **USB OTG1**
 
 ### Power Mode Selection
 
-- Use **`3–4`** when flashing firmware through the debugger
+- Use **`3–4`** when flashing firmware through the JTAG debugger
 - Use **`5–6`** when running the firmware over **USB OTG2** with the micro-ROS Agent
+- Use **`7–8`** when flashing through the STM32 **USB DFU bootloader** on **USB OTG1**
 
-## Prerequisites
+## Boot Jumper Configuration
 
-Before using this project, make sure you have:
+The Olimex STM32-E407 uses two boot-selection jumpers:
 
-- ROS 2 installed
-- a working `micro_ros_setup` workspace
-- the **Olimex STM32-E407** board
-- an **ARM-USB-TINY-H** or compatible JTAG debugger
-- a USB connection to the board’s **OTG2** port for runtime serial transport
+- **`B0_0 + B1_0`** → normal boot from user flash
+- **`B0_1 + B1_0`** → boot from STM32 system memory (DFU bootloader)
 
-If you get lost during setup, a useful reference is the micro-ROS tutorial below. Note that this repo’s setup flow differs somewhat because this environment uses ARM rather than a typical x86 Linux machine:
-
-https://micro.ros.org/docs/tutorials/core/first_application_linux/
+Use **`B0_1 + B1_0`** only when you want to flash over DFU. After flashing, switch back to **`B0_0 + B1_0`** and reset the board.
 
 ## Current Implementation Status
 
-The current implementation is **Part A** of a staged bring-up plan.
+The firmware is currently at the end of **Part B**.
 
-At this stage, the firmware does **not** yet read from the SD card. Instead, it provides:
+At this stage, it provides:
 
 - a **control** topic that accepts simple commands
 - a **neural_data** topic that publishes dummy neural sample strings on a timer
+- a **`read_once`** command that mounts the SD card, opens `neural_test.csv`, and publishes one data line
 
-This establishes the ROS 2 communication shape that will later be reused for SD-backed neural playback.
+This means the ROS 2 communication path is working, and one-shot SD read validation is in place. The next stage is replacing dummy timed publishing with continuous SD-backed playback.
 
 ### Current topics
 
@@ -82,8 +79,42 @@ This establishes the ROS 2 communication shape that will later be reused for SD-
 - `stop` → stop publishing
 - `reset` → reset the dummy sample counter to zero
 - `read_once` → mount the SD card, open the test file, and publish one data line
-- `loop_on` → enable looped playback at end-of-file
-- `loop_off` → disable looped playback
+
+## DFU Flashing (USB OTG1)
+
+DFU flashing uses the STM32 system bootloader over the board’s **USB_OTG1** port.
+
+Before flashing over DFU:
+
+- stop any running micro-ROS agent
+- remove board power
+- set boot jumpers to **`B0_1 + B1_0`**
+- set **`PWR_SEL = 7–8`** if the board will be powered from **USB_OTG1**
+- connect the USB cable to **USB_OTG1**
+- reset or power-cycle the board
+
+List DFU-capable devices:
+
+```bash
+dfu-util -l
+```
+
+Find the built Zephyr binary:
+```bash
+find ~/Documents/argus_embedded_ws -name zephyr.bin
+```
+
+If dfu-util -l shows Internal Flash on alt=0, flash with:
+```bash
+dfu-util -a 0 -s 0x08000000:leave -D /full/path/to/zephyr.bin
+```
+
+After flashing:
+
+remove power
+set boot jumpers back to B0_0 + B1_0
+move PWR_SEL back to the desired runtime mode
+reset the board
 
 ## Usage
 
@@ -110,7 +141,7 @@ Build the firmware:
 ros2 run micro_ros_setup build_firmware.sh
 ```
 
-Next we flash with the JTAG debugger; before flashing:
+Next we flash with the JTAG debugger(or DFU, instructions above); before flashing:
 
 * stop any running micro-ROS agent
 
@@ -168,7 +199,7 @@ ros2 topic list
 ```
 
 You should see the topics exposed by the firmware:
-* /argus/neural_interface_bridge/controld
+* /argus/neural_interface_bridge/control
 * /argus/neural_interface_bridge/neural_data
 
 Inspect the neural data stream:
@@ -189,6 +220,11 @@ ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String
 Reset the sample counter:
 ```bash
 ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String "{data: 'reset'}"
+```
+
+Read one line from the SD-backed CSV:
+```bash
+ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String "{data: 'read_once'}"
 ```
 
 ## Next Steps
