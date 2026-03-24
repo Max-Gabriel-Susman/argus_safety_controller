@@ -53,7 +53,6 @@ static struct fs_mount_t sd_mount = {
 	.type = FS_FATFS,
 	.fs_data = &fat_fs,
 	.mnt_point = SD_MOUNT_POINT,
-	.flags = FS_MOUNT_FLAG_USE_DISK_ACCESS,
 };
 
 static bool sd_mounted = false;
