@@ -166,7 +166,7 @@ ros2 run micro_ros_setup flash_firmware.sh
 If you have trouble flashing the board, you can assess the JTAG path with:
 ```bash
 cd ~/Documents/argus_embedded_ws
-openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -f target/stm32f4x.cfg -c "init; reset halt; shutdown"
+openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -f target/stm32f4x.cfg
 ```
 
 If OpenOCD gets stuck in a bad state, it may help to hold the board’s Reset button while starting the OpenOCD or flash command, then release it after the debugger begins attaching.
@@ -231,6 +231,10 @@ Read one line from the SD-backed CSV:
 ```bash
 ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String "{data: 'read_once'}"
 ```
+
+## Overlay
+
+the `olimex_stm32_e407.overlay` file included at root level needs to be placed on this path inside of your workspace: `/firmware/zephyr_apps/apps/argus_neural_interface_bridge/boards/olimex_stm32_e407.overlay`
 
 ## Next Steps
 
