@@ -11,7 +11,7 @@
  * Start with &sdio on STM32F4.
  * If your build says this label does not exist, switch it to &sdmmc1.
  */
-&sdio {
+&{/soc/sdio@40012c00} {
 	status = "okay";
 	bus-width = <4>;
 	pinctrl-0 = <
