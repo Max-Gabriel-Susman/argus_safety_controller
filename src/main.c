@@ -22,6 +22,7 @@
 #define PUBLISH_PERIOD_MS 500
 #define SD_MOUNT_POINT "/SD:"
 #define SD_DATA_FILE "/SD:/neural_96.csv"
+#define SD_DISK_NAME "SD"
 
 #define RCCHECK(fn) { \
 	rcl_ret_t temp_rc = fn; \
@@ -51,6 +52,7 @@ static FATFS fat_fs;
 static struct fs_mount_t sd_mount = {
 	.type = FS_FATFS,
 	.fs_data = &fat_fs,
+	.storage_dev = (void *)SD_DISK_NAME,
 	.mnt_point = SD_MOUNT_POINT,
 };
 
