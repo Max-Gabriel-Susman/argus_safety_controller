@@ -15,14 +15,13 @@
 
 #include <stdio.h>
 #include <unistd.h>
-#include <time.h>
 #include <string.h>
 #include <stdbool.h>
 
-#define STRING_BUFFER_LEN 128
+#define STRING_BUFFER_LEN 768
 #define PUBLISH_PERIOD_MS 500
 #define SD_MOUNT_POINT "/SD:"
-#define SD_TEST_FILE "/SD:/neural_test.csv"
+#define SD_DATA_FILE "/SD:/neural_96.csv"
 
 #define RCCHECK(fn) { \
 	rcl_ret_t temp_rc = fn; \
@@ -46,7 +45,6 @@ std_msgs__msg__String incoming_control;
 std_msgs__msg__String outgoing_neural_data;
 
 bool streaming_enabled = false;
-int sample_idx = 0;
 
 // FATFS mount state
 static FATFS fat_fs;
@@ -57,6 +55,11 @@ static struct fs_mount_t sd_mount = {
 };
 
 static bool sd_mounted = false;
+
+// persistent CSV stream state
+static struct fs_file_t csv_file;
+static bool csv_file_open = false;
+static bool csv_header_skipped = false;
 
 static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
 	size_t cmd_len = strlen(cmd);
@@ -73,7 +76,6 @@ static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
 }
 
 static void publish_text(const char *text) {
-	printf("publish text invoked"); // DEBUG stmt
 	size_t len = strlen(text);
 
 	if (len >= outgoing_neural_data.data.capacity) {
@@ -106,46 +108,118 @@ static int ensure_sd_mounted(void) {
 	return rc;
 }
 
-static int read_first_data_line_from_sd(char *buf, size_t buf_len) {
-	printf("read_first_data_line_from_sd invoked"); // DEBUG stmt
-	struct fs_file_t file;
-	ssize_t bytes_read;
-	char ch;
-	size_t idx = 0;
+static void close_csv_file(void) {
+	if (csv_file_open) {
+		fs_close(&csv_file);
+		csv_file_open = false;
+	}
+	csv_header_skipped = false;
+}
+
+static int open_csv_file(void) {
 	int rc;
-	bool seen_newline = false;
 
 	rc = ensure_sd_mounted();
 	if (rc != 0) {
 		return rc;
 	}
 
-	fs_file_t_init(&file);
+	if (csv_file_open) {
+		return 0;
+	}
 
-	rc = fs_open(&file, SD_TEST_FILE, FS_O_READ);
+	fs_file_t_init(&csv_file);
+
+	rc = fs_open(&csv_file, SD_DATA_FILE, FS_O_READ);
 	if (rc < 0) {
-		printf("fs_open failed: %d\n", rc);
+		printf("fs_open failed for %s: %d\n", SD_DATA_FILE, rc);
 		return rc;
 	}
 
-	// skip header line
+	csv_file_open = true;
+	csv_header_skipped = false;
+	printf("Opened CSV file: %s\n", SD_DATA_FILE);
+	return 0;
+}
+
+static int skip_csv_header(void) {
+	ssize_t bytes_read;
+	char ch;
+
+	if (!csv_file_open) {
+		return -10;
+	}
+
+	if (csv_header_skipped) {
+		return 0;
+	}
+
 	while (1) {
-		bytes_read = fs_read(&file, &ch, 1);
+		bytes_read = fs_read(&csv_file, &ch, 1);
 		if (bytes_read <= 0) {
-			fs_close(&file);
-			return -1;
+			printf("Failed while skipping CSV header.\n");
+			return -11;
 		}
 
 		if (ch == '\n') {
-			break;
+			csv_header_skipped = true;
+			return 0;
 		}
 	}
+}
 
-	// read first data line
-	while (idx < (buf_len -1)) {
-		bytes_read = fs_read(&file, &ch, 1);
-		if (bytes_read <= 0) {
-			break;
+static int rewind_csv_stream(void) {
+	close_csv_file();
+	return open_csv_file();
+}
+
+static int read_next_csv_line(char *buf, size_t buf_len) {
+	ssize_t bytes_read;
+	char ch;
+	size_t idx = 0;
+	bool saw_any_data = false;
+	int rc;
+
+	if (buf_len == 0) {
+		return -20;
+	}
+
+	rc = open_csv_file();
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = skip_csv_header();
+	if (rc != 0) {
+		return rc;
+	}
+
+	while (1) {
+		bytes_read = fs_read(&csv_file, &ch, 1);
+
+		if (bytes_read < 0) {
+			printf("fs_read failed: %d\n", (int)bytes_read);
+			return (int)bytes_read;
+		}
+
+		if (bytes_read == 0) {
+			// EOF
+			if (saw_any_data) {
+				break;
+			}
+
+			// loop back to beginning and try again
+			rc = rewind_csv_stream();
+			if (rc != 0) {
+				return rc;
+			}
+
+			rc = skip_csv_header();
+			if (rc != 0) {
+				return rc;
+			}
+
+			continue;
 		}
 
 		if (ch == '\r') {
@@ -153,21 +227,24 @@ static int read_first_data_line_from_sd(char *buf, size_t buf_len) {
 		}
 
 		if (ch == '\n') {
-			seen_newline = true;
-			break;
+			if (saw_any_data) {
+				break;
+			}
+			continue;
 		}
 
-		buf[idx++] = ch;
+		saw_any_data = true;
+
+		if (idx < (buf_len - 1)) {
+			buf[idx++] = ch;
+		} else {
+			buf[idx] = '\0';
+			printf("CSV line too long for buffer.\n");
+			return -21;
+		}
 	}
 
 	buf[idx] = '\0';
-
-	fs_close(&file);
-
-	if (idx == 0 && !seen_newline) {
-		return -2;
-	}
-
 	return 0;
 }
 
@@ -178,48 +255,20 @@ void neural_data_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
 		return;
 	}
 
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
+	char line_buf[STRING_BUFFER_LEN];
+	int rc = read_next_csv_line(line_buf, sizeof(line_buf));
 
-	int ch1 = sample_idx % 100;
-	int ch2 = (sample_idx + 7) % 100;
-	int ch3 = (sample_idx + 13) % 100;
-	int ch4 = (sample_idx + 29) % 100;
-
-	int written = snprintf(
-		outgoing_neural_data.data.data,
-		outgoing_neural_data.data.capacity,
-		"sample=%d,t=%ld.%09ld,ch1=%d,ch2=%d,ch3=%d,ch4=%d",
-		sample_idx,
-		(long)ts.tv_sec,
-		(long)ts.tv_nsec,
-		ch1,
-		ch2,
-		ch3,
-		ch4
-	);
-
-	if (written < 0) {
-		printf("Failed to format outgoing neural data.\n");
-		return;
+	if (rc == 0) {
+		publish_text(line_buf);
+	} else {
+		snprintf(line_buf, sizeof(line_buf), "csv_read_error=%d", rc);
+		publish_text(line_buf);
 	}
-
-	if ((size_t)written >= outgoing_neural_data.data.capacity) {
-		written = outgoing_neural_data.data.capacity - 1;
-		outgoing_neural_data.data.data[written] = '\0';
-	}
-
-	outgoing_neural_data.data.size = (size_t)written;
-
-	RCSOFTCHECK(rcl_publish(&neural_data_publisher, &outgoing_neural_data, NULL));
-	printf("Published neural data: %s\n", outgoing_neural_data.data.data);
-
-	sample_idx++;
 }
 
 void control_subscription_callback(const void *msgin) {
 	const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
-    char line_buf[STRING_BUFFER_LEN];
+	char line_buf[STRING_BUFFER_LEN];
 	int rc;
 
 	if (msg->data.data == NULL) {
@@ -235,14 +284,18 @@ void control_subscription_callback(const void *msgin) {
 		streaming_enabled = false;
 		printf("Streaming disabled.\n");
 	} else if (command_equals(msg, "reset")) {
-		sample_idx = 0;
-		printf("Sample index reset.\n");
+		rc = rewind_csv_stream();
+		if (rc == 0) {
+			printf("CSV stream reset.\n");
+		} else {
+			printf("CSV reset failed: %d\n", rc);
+		}
 	} else if (command_equals(msg, "read_once")) {
-		rc = read_first_data_line_from_sd(line_buf, sizeof(line_buf));
+		rc = read_next_csv_line(line_buf, sizeof(line_buf));
 		if (rc == 0) {
 			publish_text(line_buf);
 		} else {
-			snprintf(line_buf, sizeof(line_buf), "sd_read_error=%d", rc);
+			snprintf(line_buf, sizeof(line_buf), "csv_read_error=%d", rc);
 			publish_text(line_buf);
 		}
 	} else {
@@ -251,7 +304,8 @@ void control_subscription_callback(const void *msgin) {
 }
 
 void main(void) {
-	printf("main invoked"); // DEBUG stmt
+	printf("main invoked\n");
+
 	rmw_uros_set_custom_transport(
 		MICRO_ROS_FRAMING_REQUIRED,
 		(void *) &default_params,
@@ -316,6 +370,8 @@ void main(void) {
 		rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
 		usleep(100000);
 	}
+
+	close_csv_file();
 
 	RCSOFTCHECK(rcl_publisher_fini(&neural_data_publisher, &node));
 	RCSOFTCHECK(rcl_subscription_fini(&control_subscriber, &node));
