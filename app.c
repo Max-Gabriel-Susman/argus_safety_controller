@@ -4,147 +4,189 @@
 #include <rclc/executor.h>
 
 #include <std_msgs/msg/header.h>
+#include <argus_core/msg/neural_frame.h>
 
 #include <stdio.h>
-#include <unistd.h>
-#include <time.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
-#ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#endif
 
-#define STRING_BUFFER_LEN 50
+#define CONTROL_BUFFER_LEN 32
+#define PUBLISH_PERIOD_MS  500
+#define NEURAL_CHANNELS    96
 
-#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Aborting.\n",__LINE__,(int)temp_rc); vTaskDelete(NULL);}}
-#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Continuing.\n",__LINE__,(int)temp_rc);}}
-
-rcl_publisher_t ping_publisher;
-rcl_publisher_t pong_publisher;
-rcl_subscription_t ping_subscriber;
-rcl_subscription_t pong_subscriber;
-
-std_msgs__msg__Header incoming_ping;
-std_msgs__msg__Header outcoming_ping;
-std_msgs__msg__Header incoming_pong;
-
-int device_id;
-int seq_no;
-int pong_count;
-
-void ping_timer_callback(rcl_timer_t * timer, int64_t last_call_time)
-{
-	RCLC_UNUSED(last_call_time);
-
-	if (timer != NULL) {
-
-		seq_no = rand();
-		sprintf(outcoming_ping.frame_id.data, "%d_%d", seq_no, device_id);
-		outcoming_ping.frame_id.size = strlen(outcoming_ping.frame_id.data);
-
-		// Fill the message timestamp
-		struct timespec ts;
-		clock_gettime(CLOCK_REALTIME, &ts);
-		outcoming_ping.stamp.sec = ts.tv_sec;
-		outcoming_ping.stamp.nanosec = ts.tv_nsec;
-
-		// Reset the pong count and publish the ping message
-		pong_count = 0;
-		rcl_publish(&ping_publisher, (const void*)&outcoming_ping, NULL);
-		printf("Ping send seq %s\n", outcoming_ping.frame_id.data);
-	}
+#define RCCHECK(fn) { 
+	do {
+		rcl_ret_t temp_rc = fn; 
+		if((temp_rc != RCL_RET_OK)) {
+			printf("Failed status on line %d: %d. Aborting.\n",__LINE__,(int)temp_rc);
+			return;
+		}
+	} while (0)
 }
 
-void ping_subscription_callback(const void * msgin)
-{
-	const std_msgs__msg__Header * msg = (const std_msgs__msg__Header *)msgin;
-
-	// Dont pong my own pings
-	if(strcmp(outcoming_ping.frame_id.data, msg->frame_id.data) != 0){
-		printf("Ping received with seq %s. Answering.\n", msg->frame_id.data);
-		rcl_publish(&pong_publisher, (const void*)msg, NULL);
-	}
+#define RCSOFTCHECK(fn) { 
+	do {
+		rcl_ret_t temp_rc = fn; 
+		if((temp_rc != RCL_RET_OK)) {
+			printf("Failed status on line %d: %d. Continuing.\n",__LINE__,(int)temp_rc);
+		}
+	} while (0)
 }
 
+typedef struct {
+	uint32_t sample;
+	float t;
+	uint16_t channels[96];
+} replay_frame_t;
 
-void pong_subscription_callback(const void * msgin)
-{
-	const std_msgs__msg__Header * msg = (const std_msgs__msg__Header *)msgin;
+extern const replay_frame_t g_neural_replay[];
+extern const size_t g_neural_replay_len;
 
-	if(strcmp(outcoming_ping.frame_id.data, msg->frame_id.data) == 0) {
-		pong_count++;
-		printf("Pong for seq %s (%d)\n", msg->frame_id.data, pong_count);
+static rcl_publisher_t neural_data_publisher;
+static rcl_subscription_t control_subsriber;
+
+static std_msgs__msg__String incoming_control;
+static argus_core__msg__NeuralFrame outgoing_neural_frame;
+
+static bool streaming_enabled = false;
+static size_t replay_index = 0;
+
+static bool command_equals(const std_msgs__msg__String *msg, const char *cmd) {
+	size_t cmd_len = strlen(cmd);
+
+	if (msg == NULL || msg->data.data == NULL) {
+		return false;
+	}
+
+	if (msg->data.size != cmd_len) {
+		return false;
+	}
+
+	return strncmp(msg->data.data, cmd, cmd_len) == 0;
+}
+
+static bool load_next_replay_frame(argus_core__msg__NeuralFrame *msg) {
+	if (msg == NULL || g_neural_replay_len == 0) {
+		return false;
+	}
+
+	const replay_frame_t *src = &g_neural_replay[replay_index];
+
+	msg->sample = src->sample;
+	msg->t = src->t;
+	msg->channel_count = NEURAL_CHANNELS;
+
+	for (sizet i = 0; i < NEURAL_CHANNELS; ++i) {
+		msg->channels[i] = src->channels[i];
+	}
+
+	replay_index = (replay_index + 2) % g_neural_replay_len;
+	return true;
+}
+
+static void publish_current_frame(void) {
+	if (!load_next_replay_frame(&outgoing_neural_frame)) {
+		printf("No replay frames available\n");
+		return;
+	}
+
+	RCSOFTCHECK(rcl_publish(&neural_data_publisher, &outgoing_neural_frame, NULL));
+
+	printf("Published NeuralFrame sample=%lu t=%.3f channels=%u\n",
+		(unsigned long)outgoing_neural_frame.sample,
+		(double)outgoing_neural_frame.t, 
+		(unsigned int)outgoing_neural_frame.channel_count);
+}
+
+static void neural_data_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
+	(void)last_call_time;
+
+	if (timer == NULL || !streaming_enabled) {
+		return;
+	}
+
+	publish_current_frame();
+}
+
+static void control_subscription_callback(const void * msgin) {
+	const std_msgs__msg__Header *msg = (const std_msgs__msg__Header *)msgin;
+
+	if (msg == NULL || msg->data.data == NULL) {
+		return;
+	}
+
+	printf("Received control command: %s\n", msg->data.data);
+
+	if (command_equals(msg, "start")) {
+		streaming_enabled = true;
+		printf("Streaming enabled\n");
+	} else if (command_equals(msg, "stop")) {
+		streaming_enabled = false;
+		printf("Streaming disabled\n";)
+	} else if (command_equals(msg, "reset")) {
+		replay_index = 0;
+		printf("Replay reset\n")
+	} else if (command_equals(msg, "read_once")) {
+		printf("Publishing the current frame\n");
+		publish_current_frame();
+	} else {
+		printf("Unknown control command\n");
 	}
 }
 
 
 void appMain(void *argument)
 {
+	printf("Initializeing Argus Neural Interface Bridge...\n");
+	(void)argument;
 	rcl_allocator_t allocator = rcl_get_default_allocator();
 	rclc_support_t support;
+	rcl_node_t node;
+	rcl_timer_t timer;
+	rclc_executor_t executor;
+
+	memset(&neural_data_publisher, 0, sizeof(neural_data_publisher));
+	memset(&control_subscriber, 0, sizeof(control_subscriber));
+	memset(&incoming_control, 0, sizeof(incoming_control));
+	memset(&outgoing_neural_frame, 0, sizeof(outgoing_neural_frame));
+
+	static char incoming_control_buffer[CONTROL_BUFFER_LEN];
+	incoming_control.data.data = incoming_control_buffer;
+	incoming_control.data.capacity = CONTROL_BUFFER_LEN;
+	incoming_control.data.size = 0;
+	incoming_control.data.data[0] = '\0';
 
 	// create init_options
 	RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
 
-	// create node
-	rcl_node_t node;
-	RCCHECK(rclc_node_init_default(&node, "pingpong_node", "", &support));
+	// initialize node
+	RCCHECK(rclc_node_init_default(&node, "argus_interface_bridge", "", &support));
 
-	// Create a reliable ping publisher
-	RCCHECK(rclc_publisher_init_default(&ping_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Header), "/microROS/ping"));
+	// Create a reliable neural data publisher
+	RCCHECK(rclc_publisher_init_default(&neural_data_publisher, &node,
+		ROSIDL_GET_MSG_TYPE_SUPPORT(argus_core, msg, NeuralFrame), "/argus/neural_interface_bridge/neural_data"));
 
-	// Create a best effort pong publisher
-	RCCHECK(rclc_publisher_init_best_effort(&pong_publisher, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Header), "/microROS/pong"));
+	// Create a best effort control subscriber
+	RCCHECK(rclc_subscription_init_best_effort(&control_subscriber, &node,
+		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/argus/neural_interface_bridge/control"));
 
-	// Create a best effort ping subscriber
-	RCCHECK(rclc_subscription_init_best_effort(&ping_subscriber, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Header), "/microROS/ping"));
-
-	// Create a best effort  pong subscriber
-	RCCHECK(rclc_subscription_init_best_effort(&pong_subscriber, &node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Header), "/microROS/pong"));
-
-
-	// Create a 3 seconds ping timer timer,
-	rcl_timer_t timer;
-	RCCHECK(rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(2000), ping_timer_callback));
-
+	// Initialize a neural data timer,
+	RCCHECK(rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(PUBLISH_PERIOD_MS), neural_data_timer_callback));
 
 	// Create executor
-	rclc_executor_t executor;
-	RCCHECK(rclc_executor_init(&executor, &support.context, 3, &allocator));
+	RCCHECK(rclc_executor_init(&executor, &support.context, 2, &allocator));
 	RCCHECK(rclc_executor_add_timer(&executor, &timer));
-	RCCHECK(rclc_executor_add_subscription(&executor, &ping_subscriber, &incoming_ping,
-		&ping_subscription_callback, ON_NEW_DATA));
-	RCCHECK(rclc_executor_add_subscription(&executor, &pong_subscriber, &incoming_pong,
-		&pong_subscription_callback, ON_NEW_DATA));
+	RCCHECK(rclc_executor_add_subscription(&executor, &control_subscriber, &incoming_control,
+		&control_subscription_callback, ON_NEW_DATA));
 
-	// Create and allocate the pingpong messages
-	char outcoming_ping_buffer[STRING_BUFFER_LEN];
-	outcoming_ping.frame_id.data = outcoming_ping_buffer;
-	outcoming_ping.frame_id.capacity = STRING_BUFFER_LEN;
+	printf("Argus Neural Interface Bridge online.\n");
 
-	char incoming_ping_buffer[STRING_BUFFER_LEN];
-	incoming_ping.frame_id.data = incoming_ping_buffer;
-	incoming_ping.frame_id.capacity = STRING_BUFFER_LEN;
-
-	char incoming_pong_buffer[STRING_BUFFER_LEN];
-	incoming_pong.frame_id.data = incoming_pong_buffer;
-	incoming_pong.frame_id.capacity = STRING_BUFFER_LEN;
-
-	device_id = rand();
-
-	while(1){
-		rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
-		usleep(10000);
+	for (;;){
+		rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
+		vTaskDelay(pdMS_TO_TICKS(50));
 	}
-
-	// Free resources
-	RCCHECK(rcl_publisher_fini(&ping_publisher, &node));
-	RCCHECK(rcl_publisher_fini(&pong_publisher, &node));
-	RCCHECK(rcl_subscription_fini(&ping_subscriber, &node));
-	RCCHECK(rcl_subscription_fini(&pong_subscriber, &node));
-	RCCHECK(rcl_node_fini(&node));
 }
