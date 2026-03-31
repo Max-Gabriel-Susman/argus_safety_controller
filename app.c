@@ -11,8 +11,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define CONTROL_BUFFER_LEN 32
 #define PUBLISH_PERIOD_MS  500

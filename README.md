@@ -245,3 +245,23 @@ The planned next stage is to replace dummy timed sample generation with SD-backe
 * /argus/neural_interface_bridge/neural_data
 
 This will allow the board to behave more like a neural interface playback device for the rest of the Argus stack.
+
+## local build
+
+Build and flash: 
+```bash
+cd ~/Documents/microros_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+
+ros2 run micro_ros_setup configure_firmware.sh argus_neural_interface_bridge --transport serial
+ros2 run micro_ros_setup build_firmware.sh
+ros2 run micro_ros_setup flash_firmware.sh
+```
+
+Test: 
+```bash
+ros2 topic echo /argus/neural_interface_bridge/neural_data
+ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String '{data: start}'
+ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String '{data: read_once}'
+```
