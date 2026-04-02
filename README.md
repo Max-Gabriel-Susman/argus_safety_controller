@@ -285,3 +285,7 @@ ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String
 11. Build with `ros2 run micro_ros_setup build_firmware.sh`.
 12. Flash with `ros2 run micro_ros_setup flash_firmware.sh`.
 13. Start the micro-ROS agent and test `read_once`, `reset`, `start`, `stop`.g
+
+## FreeRTOS
+
+## UART
