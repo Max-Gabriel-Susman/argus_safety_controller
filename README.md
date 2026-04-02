@@ -265,3 +265,23 @@ ros2 topic echo /argus/neural_interface_bridge/neural_data
 ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String '{data: start}'
 ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String '{data: read_once}'
 ```
+
+## STM32 Repro steps
+
+1. Install STM32CubeIDE 2.1.1 and STM32CubeMX.
+2. In CubeMX, create `olimex_e407_sd_fatfs_test` for STM32F407ZGTx.
+3. Set RCC HSE to Crystal/Ceramic Resonator.
+4. Enable SDIO in 4-bit mode.
+5. Enable FATFS with SD Card backend.
+6. Generate code for STM32CubeIDE.
+7. Copy:
+   - `Middlewares/Third_Party/FatFs/src/*`
+   - `FATFS/App/*`
+   - `FATFS/Target/*`
+   into `firmware/freertos_apps/microros_olimex_e407_extensions/`.
+8. Patch the extension Makefile to add FatFs and SD sources/includes.
+9. Enable `HAL_SD_MODULE_ENABLED`.
+10. Port `MX_SDIO_SD_Init()` and `HAL_SD_MspInit()/DeInit()`.
+11. Build with `ros2 run micro_ros_setup build_firmware.sh`.
+12. Flash with `ros2 run micro_ros_setup flash_firmware.sh`.
+13. Start the micro-ROS agent and test `read_once`, `reset`, `start`, `stop`.g
