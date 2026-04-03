@@ -1,4 +1,8 @@
 // app.c
+#include <rmw_microros/rmw_microros.h>
+#include <uxr/client/profile/transport/custom/custom_transport.h>
+#include "stm32f4xx_hal.h"
+
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
@@ -18,11 +22,11 @@
 #include "task.h"
 #include "ff.h"
 
-#define CONTROL_BUFFER_LEN 32
-#define PUBLISH_PERIOD_MS  500
-#define NEURAL_CHANNELS    96
-#define CSV_LINE_BUFFER_LEN 768
-#define NEURAL_CSV_PATH    "0:/neural_96.csv"
+#define CONTROL_BUFFER_LEN   32
+#define PUBLISH_PERIOD_MS    500
+#define NEURAL_CHANNELS      96
+#define CSV_LINE_BUFFER_LEN  768
+#define NEURAL_CSV_PATH      "0:/neural_96.csv"
 
 #define RCCHECK(fn)                                                         \
   do {                                                                      \
@@ -56,6 +60,11 @@ static bool sd_mounted = false;
 static bool csv_open = false;
 
 static char csv_line_buffer[CSV_LINE_BUFFER_LEN];
+
+/*
+ * Replace huart3 if your grep output shows a different UART handle.
+ */
+extern UART_HandleTypeDef huart3;
 
 static bool command_equals(const std_msgs__msg__String * msg, const char * cmd)
 {
@@ -104,7 +113,7 @@ static bool sd_readline(FIL * file, char * buffer, size_t buffer_len)
     }
 
     if (br == 0) {
-      break;  // EOF
+      break;
     }
 
     buffer[index++] = c;
@@ -217,7 +226,6 @@ static bool sd_open_and_prime_csv(void)
   csv_open = true;
   printf("Opened %s\n", NEURAL_CSV_PATH);
 
-  // Skip header row: sample,t,ch0,...,ch95
   if (!sd_readline(&neural_csv_file, csv_line_buffer, sizeof(csv_line_buffer))) {
     printf("Failed to read CSV header\n");
     f_close(&neural_csv_file);
@@ -316,10 +324,119 @@ static void control_subscription_callback(const void * msgin)
   }
 }
 
+static bool stm32_uart_transport_open(struct uxrCustomTransport * transport)
+{
+  (void)transport;
+  return true;
+}
+
+static bool stm32_uart_transport_close(struct uxrCustomTransport * transport)
+{
+  (void)transport;
+  return true;
+}
+
+static size_t stm32_uart_transport_write(
+  struct uxrCustomTransport * transport,
+  const uint8_t * buffer,
+  size_t length,
+  uint8_t * errcode)
+{
+  UART_HandleTypeDef * huart = (UART_HandleTypeDef *)transport->args;
+
+  if (errcode != NULL) {
+    *errcode = 0;
+  }
+
+  if (huart == NULL || buffer == NULL) {
+    if (errcode != NULL) {
+      *errcode = 1;
+    }
+    return 0;
+  }
+
+  HAL_StatusTypeDef ret =
+    HAL_UART_Transmit(huart, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+
+  if (ret != HAL_OK) {
+    if (errcode != NULL) {
+      *errcode = 1;
+    }
+    return 0;
+  }
+
+  return length;
+}
+
+static size_t stm32_uart_transport_read(
+  struct uxrCustomTransport * transport,
+  uint8_t * buffer,
+  size_t length,
+  int timeout,
+  uint8_t * errcode)
+{
+  UART_HandleTypeDef * huart = (UART_HandleTypeDef *)transport->args;
+
+  if (errcode != NULL) {
+    *errcode = 0;
+  }
+
+  if (huart == NULL || buffer == NULL) {
+    if (errcode != NULL) {
+      *errcode = 1;
+    }
+    return 0;
+  }
+
+  if (timeout < 0) {
+    HAL_StatusTypeDef ret =
+      HAL_UART_Receive(huart, buffer, (uint16_t)length, HAL_MAX_DELAY);
+
+    if (ret != HAL_OK) {
+      if (errcode != NULL) {
+        *errcode = 1;
+      }
+      return 0;
+    }
+
+    return length;
+  }
+
+  size_t total_read = 0;
+  uint32_t start = HAL_GetTick();
+  uint32_t timeout_ms = (uint32_t)timeout;
+
+  while (total_read < length) {
+    HAL_StatusTypeDef ret =
+      HAL_UART_Receive(huart, &buffer[total_read], 1, 1);
+
+    if (ret == HAL_OK) {
+      total_read++;
+      continue;
+    }
+
+    if ((HAL_GetTick() - start) >= timeout_ms) {
+      break;
+    }
+  }
+
+  return total_read;
+}
+
 void appMain(void * argument)
 {
   printf("Initializing Argus Neural Interface Bridge...\n");
   (void)argument;
+
+  printf("Configuring micro-ROS UART transport...\n");
+  rmw_ret_t trc = rmw_uros_set_custom_transport(
+    true,
+    (void *)&huart3,
+    stm32_uart_transport_open,
+    stm32_uart_transport_close,
+    stm32_uart_transport_write,
+    stm32_uart_transport_read);
+  printf("rmw_uros_set_custom_transport rc=%d\n", (int)trc);
 
   rcl_allocator_t allocator = rcl_get_default_allocator();
   rclc_support_t support;
@@ -335,10 +452,17 @@ void appMain(void * argument)
   memset(&neural_csv_file, 0, sizeof(neural_csv_file));
   sd_mounted = false;
   csv_open = false;
+  streaming_enabled = false;
 
+  /*
+   * Keep SD startup fenced off for now so we can isolate transport/node bringup.
+   * Re-enable after the node and topic appear correctly.
+   */
+  /*
   if (!sd_open_and_prime_csv()) {
     printf("Warning: SD CSV source not ready at startup\n");
   }
+  */
 
   static char incoming_control_buffer[CONTROL_BUFFER_LEN];
   incoming_control.data.data = incoming_control_buffer;
@@ -346,40 +470,51 @@ void appMain(void * argument)
   incoming_control.data.size = 0;
   incoming_control.data.data[0] = '\0';
 
+  printf("startup: before rclc_support_init\n");
   RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+  printf("startup: support ok\n");
 
   RCCHECK(rclc_node_init_default(
     &node,
     "argus_neural_interface_bridge",
     "",
     &support));
+  printf("startup: node ok\n");
 
   RCCHECK(rclc_publisher_init_default(
     &neural_data_publisher,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(argus_core, msg, NeuralFrame),
     "/argus/neural_interface_bridge/neural_data"));
+  printf("startup: publisher ok\n");
 
   RCCHECK(rclc_subscription_init_best_effort(
     &control_subscriber,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
     "/argus/neural_interface_bridge/control"));
+  printf("startup: subscription ok\n");
 
   RCCHECK(rclc_timer_init_default(
     &timer,
     &support,
     RCL_MS_TO_NS(PUBLISH_PERIOD_MS),
     neural_data_timer_callback));
+  printf("startup: timer ok\n");
 
   RCCHECK(rclc_executor_init(&executor, &support.context, 2, &allocator));
+  printf("startup: executor init ok\n");
+
   RCCHECK(rclc_executor_add_timer(&executor, &timer));
+  printf("startup: executor add timer ok\n");
+
   RCCHECK(rclc_executor_add_subscription(
     &executor,
     &control_subscriber,
     &incoming_control,
     &control_subscription_callback,
     ON_NEW_DATA));
+  printf("startup: executor add subscription ok\n");
 
   printf("Argus Neural Interface Bridge online.\n");
 
