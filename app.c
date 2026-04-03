@@ -454,15 +454,9 @@ void appMain(void * argument)
   csv_open = false;
   streaming_enabled = false;
 
-  /*
-   * Keep SD startup fenced off for now so we can isolate transport/node bringup.
-   * Re-enable after the node and topic appear correctly.
-   */
-  /*
   if (!sd_open_and_prime_csv()) {
     printf("Warning: SD CSV source not ready at startup\n");
   }
-  */
 
   static char incoming_control_buffer[CONTROL_BUFFER_LEN];
   incoming_control.data.data = incoming_control_buffer;
