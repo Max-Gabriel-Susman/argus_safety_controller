@@ -163,13 +163,20 @@ At this point you're ready to flash:
 ros2 run micro_ros_setup flash_firmware.sh
 ```
 
-If you have trouble flashing the board, you can assess the JTAG path with:
+If you have trouble flashing the board, you can debug using GDB, first you'll need to launch a GDB server like OpenOCD:
 ```bash
 cd ~/Documents/argus_embedded_ws
 openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -f target/stm32f4x.cfg
 ```
 
 If OpenOCD gets stuck in a bad state, it may help to hold the board’s Reset button while starting the OpenOCD or flash command, then release it after the debugger begins attaching.
+
+Once OpenOCD is in a healthy state you can debug using GDB like so: 
+```bash
+cd ~/Documents/microros_ws
+
+gdb-multiarch ~/Documents/microros_ws/firmware/freertos_apps/microros_olimex_e407_extensions/build/micro-ROS.elf
+```
 
 After successfully flashing switch back to runtime mode:
 

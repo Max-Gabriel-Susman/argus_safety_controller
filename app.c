@@ -28,12 +28,13 @@
 #define CSV_LINE_BUFFER_LEN  768
 #define NEURAL_CSV_PATH      "0:/neural_96.csv"
 
+/* Disable UART debug prints while using UART3 as the micro-ROS transport. */
+#define DBG_PRINT(...) do {} while (0)
+
 #define RCCHECK(fn)                                                         \
   do {                                                                      \
     rcl_ret_t temp_rc = (fn);                                               \
     if (temp_rc != RCL_RET_OK) {                                            \
-      printf("Failed status on line %d: %d. Aborting.\n",                   \
-             __LINE__, (int)temp_rc);                                       \
       return;                                                               \
     }                                                                       \
   } while (0)
@@ -41,10 +42,7 @@
 #define RCSOFTCHECK(fn)                                                     \
   do {                                                                      \
     rcl_ret_t temp_rc = (fn);                                               \
-    if (temp_rc != RCL_RET_OK) {                                            \
-      printf("Failed status on line %d: %d. Continuing.\n",                 \
-             __LINE__, (int)temp_rc);                                       \
-    }                                                                       \
+    (void)temp_rc;                                                          \
   } while (0)
 
 static rcl_publisher_t neural_data_publisher;
@@ -61,9 +59,7 @@ static bool csv_open = false;
 
 static char csv_line_buffer[CSV_LINE_BUFFER_LEN];
 
-/*
- * Replace huart3 if your grep output shows a different UART handle.
- */
+/* Verified from your extension tree */
 extern UART_HandleTypeDef huart3;
 
 static bool command_equals(const std_msgs__msg__String * msg, const char * cmd)
@@ -108,7 +104,6 @@ static bool sd_readline(FIL * file, char * buffer, size_t buffer_len)
     FRESULT fr = f_read(file, &c, 1, &br);
 
     if (fr != FR_OK) {
-      printf("f_read failed: %d\n", (int)fr);
       return false;
     }
 
@@ -150,27 +145,23 @@ static bool parse_csv_line_to_neural_frame(
   char * endptr = NULL;
 
   if (token == NULL) {
-    printf("CSV parse failed: missing sample column\n");
     return false;
   }
 
   unsigned long sample_value = strtoul(token, &endptr, 10);
   if (endptr == token || *endptr != '\0' || sample_value > UINT32_MAX) {
-    printf("CSV parse failed: invalid sample value '%s'\n", token);
     return false;
   }
   msg->sample = (uint32_t)sample_value;
 
   token = strtok_r(NULL, ",", &saveptr);
   if (token == NULL) {
-    printf("CSV parse failed: missing time column\n");
     return false;
   }
 
   endptr = NULL;
   float t_value = strtof(token, &endptr);
   if (endptr == token || *endptr != '\0') {
-    printf("CSV parse failed: invalid time value '%s'\n", token);
     return false;
   }
   msg->t = t_value;
@@ -180,15 +171,12 @@ static bool parse_csv_line_to_neural_frame(
   for (size_t i = 0; i < NEURAL_CHANNELS; ++i) {
     token = strtok_r(NULL, ",", &saveptr);
     if (token == NULL) {
-      printf("CSV parse failed: missing channel %lu\n", (unsigned long)i);
       return false;
     }
 
     endptr = NULL;
     unsigned long channel_value = strtoul(token, &endptr, 10);
     if (endptr == token || *endptr != '\0' || channel_value > UINT16_MAX) {
-      printf("CSV parse failed: invalid channel %lu value '%s'\n",
-             (unsigned long)i, token);
       return false;
     }
 
@@ -205,11 +193,9 @@ static bool sd_open_and_prime_csv(void)
   if (!sd_mounted) {
     fr = f_mount(&sd_fs, "0:", 1);
     if (fr != FR_OK) {
-      printf("f_mount failed: %d\n", (int)fr);
       return false;
     }
     sd_mounted = true;
-    printf("SD mounted successfully\n");
   }
 
   if (csv_open) {
@@ -219,21 +205,17 @@ static bool sd_open_and_prime_csv(void)
 
   fr = f_open(&neural_csv_file, NEURAL_CSV_PATH, FA_READ);
   if (fr != FR_OK) {
-    printf("f_open failed for %s: %d\n", NEURAL_CSV_PATH, (int)fr);
     return false;
   }
 
   csv_open = true;
-  printf("Opened %s\n", NEURAL_CSV_PATH);
 
   if (!sd_readline(&neural_csv_file, csv_line_buffer, sizeof(csv_line_buffer))) {
-    printf("Failed to read CSV header\n");
     f_close(&neural_csv_file);
     csv_open = false;
     return false;
   }
 
-  printf("CSV header: %s\n", csv_line_buffer);
   return true;
 }
 
@@ -255,7 +237,6 @@ static bool load_next_sd_frame(argus_core__msg__NeuralFrame * msg)
   }
 
   if (!sd_readline(&neural_csv_file, csv_line_buffer, sizeof(csv_line_buffer))) {
-    printf("Reached EOF or failed reading next CSV row\n");
     return false;
   }
 
@@ -265,19 +246,11 @@ static bool load_next_sd_frame(argus_core__msg__NeuralFrame * msg)
 static void publish_current_frame(void)
 {
   if (!load_next_sd_frame(&outgoing_neural_frame)) {
-    printf("No SD-backed replay frame available\n");
     streaming_enabled = false;
     return;
   }
 
   RCSOFTCHECK(rcl_publish(&neural_data_publisher, &outgoing_neural_frame, NULL));
-
-  printf("Published NeuralFrame sample=%lu t=%.3f channels=%u ch0=%u ch95=%u\n",
-         (unsigned long)outgoing_neural_frame.sample,
-         (double)outgoing_neural_frame.t,
-         (unsigned int)outgoing_neural_frame.channel_count,
-         (unsigned int)outgoing_neural_frame.channels[0],
-         (unsigned int)outgoing_neural_frame.channels[95]);
 }
 
 static void neural_data_timer_callback(rcl_timer_t * timer, int64_t last_call_time)
@@ -299,28 +272,15 @@ static void control_subscription_callback(const void * msgin)
     return;
   }
 
-  printf("Received control command: %.*s\n",
-         (int)msg->data.size,
-         msg->data.data);
-
   if (command_equals(msg, "start")) {
     streaming_enabled = true;
-    printf("Streaming enabled\n");
   } else if (command_equals(msg, "stop")) {
     streaming_enabled = false;
-    printf("Streaming disabled\n");
   } else if (command_equals(msg, "reset")) {
     streaming_enabled = false;
-    if (sd_reset_csv()) {
-      printf("Replay reset to start of CSV\n");
-    } else {
-      printf("Replay reset failed\n");
-    }
+    (void)sd_reset_csv();
   } else if (command_equals(msg, "read_once")) {
-    printf("Publishing the current frame\n");
     publish_current_frame();
-  } else {
-    printf("Unknown control command\n");
   }
 }
 
@@ -425,18 +385,15 @@ static size_t stm32_uart_transport_read(
 
 void appMain(void * argument)
 {
-  printf("Initializing Argus Neural Interface Bridge...\n");
   (void)argument;
 
-  printf("Configuring micro-ROS UART transport...\n");
-  rmw_ret_t trc = rmw_uros_set_custom_transport(
+  rmw_uros_set_custom_transport(
     true,
     (void *)&huart3,
     stm32_uart_transport_open,
     stm32_uart_transport_close,
     stm32_uart_transport_write,
     stm32_uart_transport_read);
-  printf("rmw_uros_set_custom_transport rc=%d\n", (int)trc);
 
   rcl_allocator_t allocator = rcl_get_default_allocator();
   rclc_support_t support;
@@ -454,9 +411,8 @@ void appMain(void * argument)
   csv_open = false;
   streaming_enabled = false;
 
-  if (!sd_open_and_prime_csv()) {
-    printf("Warning: SD CSV source not ready at startup\n");
-  }
+  /* Keep SD init enabled for read_once testing */
+  (void)sd_open_and_prime_csv();
 
   static char incoming_control_buffer[CONTROL_BUFFER_LEN];
   incoming_control.data.data = incoming_control_buffer;
@@ -464,53 +420,40 @@ void appMain(void * argument)
   incoming_control.data.size = 0;
   incoming_control.data.data[0] = '\0';
 
-  printf("startup: before rclc_support_init\n");
   RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
-  printf("startup: support ok\n");
 
   RCCHECK(rclc_node_init_default(
     &node,
     "argus_neural_interface_bridge",
     "",
     &support));
-  printf("startup: node ok\n");
 
   RCCHECK(rclc_publisher_init_default(
     &neural_data_publisher,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(argus_core, msg, NeuralFrame),
     "/argus/neural_interface_bridge/neural_data"));
-  printf("startup: publisher ok\n");
 
   RCCHECK(rclc_subscription_init_best_effort(
     &control_subscriber,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
     "/argus/neural_interface_bridge/control"));
-  printf("startup: subscription ok\n");
 
   RCCHECK(rclc_timer_init_default(
     &timer,
     &support,
     RCL_MS_TO_NS(PUBLISH_PERIOD_MS),
     neural_data_timer_callback));
-  printf("startup: timer ok\n");
 
   RCCHECK(rclc_executor_init(&executor, &support.context, 2, &allocator));
-  printf("startup: executor init ok\n");
-
   RCCHECK(rclc_executor_add_timer(&executor, &timer));
-  printf("startup: executor add timer ok\n");
-
   RCCHECK(rclc_executor_add_subscription(
     &executor,
     &control_subscriber,
     &incoming_control,
     &control_subscription_callback,
     ON_NEW_DATA));
-  printf("startup: executor add subscription ok\n");
-
-  printf("Argus Neural Interface Bridge online.\n");
 
   for (;;) {
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
