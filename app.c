@@ -1,4 +1,3 @@
-// app.c
 #include <rmw_microros/rmw_microros.h>
 #include <uxr/client/profile/transport/custom/custom_transport.h>
 #include "stm32f4xx_hal.h"
@@ -11,22 +10,19 @@
 #include <std_msgs/msg/string.h>
 #include <argus_core/msg/neural_frame.h>
 
-#include <stdio.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <stdlib.h>
-#include <limits.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
-#include "ff.h"
+
+#include "replay_data.h"
 
 #define CONTROL_BUFFER_LEN   32
 #define PUBLISH_PERIOD_MS    500
-#define NEURAL_CHANNELS      96
-#define CSV_LINE_BUFFER_LEN  768
-#define NEURAL_CSV_PATH      "0:/neural_96.csv"
+#define NEURAL_CHANNELS      REPLAY_CHANNELS
 
 /* Disable UART debug prints while using UART3 as the micro-ROS transport. */
 #define DBG_PRINT(...) do {} while (0)
@@ -52,15 +48,11 @@ static std_msgs__msg__String incoming_control;
 static argus_core__msg__NeuralFrame outgoing_neural_frame;
 
 static bool streaming_enabled = false;
-static FATFS sd_fs;
-static FIL neural_csv_file;
-static bool sd_mounted = false;
-static bool csv_open = false;
+static size_t replay_index = 0;
 
 static volatile int g_sub_rc = 0;
-static volatile const char * g_sub_err = NULL;
-
-static char csv_line_buffer[CSV_LINE_BUFFER_LEN];
+static volatile const char * g_sub_err_ptr = NULL;
+static char g_sub_err_copy[160];
 
 /* Verified from your extension tree */
 extern UART_HandleTypeDef huart3;
@@ -80,175 +72,52 @@ static bool command_equals(const std_msgs__msg__String * msg, const char * cmd)
   return strncmp(msg->data.data, cmd, cmd_len) == 0;
 }
 
-static void trim_newline(char * s)
+static bool replay_reset(void)
 {
-  if (s == NULL) {
-    return;
-  }
-
-  size_t len = strlen(s);
-  while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == '\r')) {
-    s[len - 1] = '\0';
-    --len;
-  }
-}
-
-static bool sd_readline(FIL * file, char * buffer, size_t buffer_len)
-{
-  if (file == NULL || buffer == NULL || buffer_len < 2) {
-    return false;
-  }
-
-  size_t index = 0;
-
-  while (index < (buffer_len - 1)) {
-    UINT br = 0;
-    char c = '\0';
-    FRESULT fr = f_read(file, &c, 1, &br);
-
-    if (fr != FR_OK) {
-      return false;
-    }
-
-    if (br == 0) {
-      break;
-    }
-
-    buffer[index++] = c;
-
-    if (c == '\n') {
-      break;
-    }
-  }
-
-  buffer[index] = '\0';
-
-  if (index == 0) {
-    return false;
-  }
-
-  trim_newline(buffer);
+  replay_index = 0;
   return true;
 }
 
-static bool parse_csv_line_to_neural_frame(
-  const char * line,
+static bool replay_frame_to_neural_msg(
+  const replay_frame_t * frame,
   argus_core__msg__NeuralFrame * msg)
 {
-  if (line == NULL || msg == NULL) {
+  if (frame == NULL || msg == NULL) {
     return false;
   }
 
-  char local[CSV_LINE_BUFFER_LEN];
-  strncpy(local, line, sizeof(local) - 1);
-  local[sizeof(local) - 1] = '\0';
-
-  char * saveptr = NULL;
-  char * token = strtok_r(local, ",", &saveptr);
-  char * endptr = NULL;
-
-  if (token == NULL) {
-    return false;
-  }
-
-  unsigned long sample_value = strtoul(token, &endptr, 10);
-  if (endptr == token || *endptr != '\0' || sample_value > UINT32_MAX) {
-    return false;
-  }
-  msg->sample = (uint32_t)sample_value;
-
-  token = strtok_r(NULL, ",", &saveptr);
-  if (token == NULL) {
-    return false;
-  }
-
-  endptr = NULL;
-  float t_value = strtof(token, &endptr);
-  if (endptr == token || *endptr != '\0') {
-    return false;
-  }
-  msg->t = t_value;
-
+  msg->sample = frame->sample;
+  msg->t = frame->t;
   msg->channel_count = NEURAL_CHANNELS;
 
   for (size_t i = 0; i < NEURAL_CHANNELS; ++i) {
-    token = strtok_r(NULL, ",", &saveptr);
-    if (token == NULL) {
-      return false;
-    }
-
-    endptr = NULL;
-    unsigned long channel_value = strtoul(token, &endptr, 10);
-    if (endptr == token || *endptr != '\0' || channel_value > UINT16_MAX) {
-      return false;
-    }
-
-    msg->channels[i] = (uint16_t)channel_value;
+    msg->channels[i] = (uint16_t)frame->channels[i];
   }
 
   return true;
 }
 
-static bool sd_open_and_prime_csv(void)
-{
-  FRESULT fr;
-
-  if (!sd_mounted) {
-    fr = f_mount(&sd_fs, "0:", 1);
-    if (fr != FR_OK) {
-      return false;
-    }
-    sd_mounted = true;
-  }
-
-  if (csv_open) {
-    f_close(&neural_csv_file);
-    csv_open = false;
-  }
-
-  fr = f_open(&neural_csv_file, NEURAL_CSV_PATH, FA_READ);
-  if (fr != FR_OK) {
-    return false;
-  }
-
-  csv_open = true;
-
-  if (!sd_readline(&neural_csv_file, csv_line_buffer, sizeof(csv_line_buffer))) {
-    f_close(&neural_csv_file);
-    csv_open = false;
-    return false;
-  }
-
-  return true;
-}
-
-static bool sd_reset_csv(void)
-{
-  return sd_open_and_prime_csv();
-}
-
-static bool load_next_sd_frame(argus_core__msg__NeuralFrame * msg)
+static bool load_next_replay_frame(argus_core__msg__NeuralFrame * msg)
 {
   if (msg == NULL) {
     return false;
   }
 
-  if (!csv_open) {
-    if (!sd_open_and_prime_csv()) {
-      return false;
-    }
-  }
-
-  if (!sd_readline(&neural_csv_file, csv_line_buffer, sizeof(csv_line_buffer))) {
+  if (replay_index >= REPLAY_FRAME_COUNT) {
     return false;
   }
 
-  return parse_csv_line_to_neural_frame(csv_line_buffer, msg);
+  if (!replay_frame_to_neural_msg(&g_replay_frames[replay_index], msg)) {
+    return false;
+  }
+
+  replay_index++;
+  return true;
 }
 
 static void publish_current_frame(void)
 {
-  if (!load_next_sd_frame(&outgoing_neural_frame)) {
+  if (!load_next_replay_frame(&outgoing_neural_frame)) {
     streaming_enabled = false;
     return;
   }
@@ -281,7 +150,7 @@ static void control_subscription_callback(const void * msgin)
     streaming_enabled = false;
   } else if (command_equals(msg, "reset")) {
     streaming_enabled = false;
-    (void)sd_reset_csv();
+    (void)replay_reset();
   } else if (command_equals(msg, "read_once")) {
     publish_current_frame();
   }
@@ -408,20 +277,16 @@ void appMain(void * argument)
   memset(&control_subscriber, 0, sizeof(control_subscriber));
   memset(&incoming_control, 0, sizeof(incoming_control));
   memset(&outgoing_neural_frame, 0, sizeof(outgoing_neural_frame));
-  memset(&sd_fs, 0, sizeof(sd_fs));
-  memset(&neural_csv_file, 0, sizeof(neural_csv_file));
-  sd_mounted = false;
-  csv_open = false;
   streaming_enabled = false;
-
-  /* Keep SD init enabled for read_once testing */
-  (void)sd_open_and_prime_csv();
+  replay_index = 0;
 
   static char incoming_control_buffer[CONTROL_BUFFER_LEN];
   incoming_control.data.data = incoming_control_buffer;
   incoming_control.data.capacity = CONTROL_BUFFER_LEN;
   incoming_control.data.size = 0;
   incoming_control.data.data[0] = '\0';
+
+  (void)replay_reset();
 
   RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
 
@@ -446,7 +311,18 @@ void appMain(void * argument)
   g_sub_rc = (int)sub_rc;
 
   if (sub_rc != RCL_RET_OK) {
-    g_sub_err = rcl_get_error_string().str;
+    const char * err = rcl_get_error_string().str;
+
+    g_sub_err_ptr = err;
+    memset(g_sub_err_copy, 0, sizeof(g_sub_err_copy));
+
+    if (err != NULL) {
+      strncpy(g_sub_err_copy, err, sizeof(g_sub_err_copy) - 1);
+      g_sub_err_copy[sizeof(g_sub_err_copy) - 1] = '\0';
+    } else {
+      strncpy(g_sub_err_copy, "<null>", sizeof(g_sub_err_copy) - 1);
+    }
+
     __asm volatile("bkpt 0");
     for (;;) {
       vTaskDelay(pdMS_TO_TICKS(1000));
