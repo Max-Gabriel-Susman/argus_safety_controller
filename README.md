@@ -131,7 +131,7 @@ Examples below assume the workspace is located at:
 Source the environment:
 ```bash
 cd ~/Documents/microros_ws
-source /opt/ros/$ROS_DISTRO/setup.bash
+source /opt/ros/humble/setup.bash
 source ~/Documents/microros_ws/install/local_setup.bash
 unset RMW_IMPLEMENTATION
 ```
@@ -200,7 +200,7 @@ ls /dev/ttyACM*
 Start the micro-ROS Agent over USB:
 ```bash
 cd ~/Documents/microros_ws
-source /opt/ros/$ROS_DISTRO/setup.bash
+source /opt/ros/humble/setup.bash
 source ~/Documents/microros_ws/install/local_setup.bash
 
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0
@@ -208,7 +208,7 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0
 
 Verification In a second terminal:
 ```bash
-source /opt/ros/$ROS_DISTRO/setup.bash
+source /opt/ros/humble/setup.bash
 source ~/Documents/microros_ws/install/local_setup.bash
 
 ros2 topic list
