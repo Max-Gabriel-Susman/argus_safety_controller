@@ -101,7 +101,7 @@ dfu-util -l
 
 Find the built Zephyr binary:
 ```bash
-find ~/Documents/argus_embedded_ws -name zephyr.bin
+find ~/Documents/microros_ws -name zephyr.bin
 ```
 
 If dfu-util -l shows Internal Flash on alt=0, flash with:
@@ -111,7 +111,7 @@ dfu-util -a 0 -s 0x08000000:leave -D /full/path/to/zephyr.bin
 
 It might looks something like this:
 ```bash
-dfu-util -a 0 -s 0x08000000:leave -D /home/argus/Documents/argus_embedded_ws/firmware/build/zephyr/zephyr.bin
+dfu-util -a 0 -s 0x08000000:leave -D /home/argus/Documents/microros_ws/firmware/build/zephyr/zephyr.bin
 ```
 
 After flashing:
@@ -125,14 +125,14 @@ reset the board
 
 Examples below assume the workspace is located at:
 ```bash
-~/Documents/argus_embedded_ws
+~/Documents/microros_ws
 ```
 
 Source the environment:
 ```bash
-cd ~/Documents/argus_embedded_ws
+cd ~/Documents/microros_ws
 source /opt/ros/$ROS_DISTRO/setup.bash
-source ~/Documents/argus_embedded_ws/install/local_setup.bash
+source ~/Documents/microros_ws/install/local_setup.bash
 unset RMW_IMPLEMENTATION
 ```
 
@@ -165,7 +165,7 @@ ros2 run micro_ros_setup flash_firmware.sh
 
 If you have trouble flashing the board, you can debug using GDB, first you'll need to launch a GDB server like OpenOCD:
 ```bash
-cd ~/Documents/argus_embedded_ws
+cd ~/Documents/microros_ws
 openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -f target/stm32f4x.cfg
 ```
 
@@ -199,9 +199,9 @@ ls /dev/ttyACM*
 
 Start the micro-ROS Agent over USB:
 ```bash
-cd ~/Documents/argus_embedded_ws
+cd ~/Documents/microros_ws
 source /opt/ros/$ROS_DISTRO/setup.bash
-source ~/Documents/argus_embedded_ws/install/local_setup.bash
+source ~/Documents/microros_ws/install/local_setup.bash
 
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0
 ```
@@ -209,7 +209,7 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0
 Verification In a second terminal:
 ```bash
 source /opt/ros/$ROS_DISTRO/setup.bash
-source ~/Documents/argus_embedded_ws/install/local_setup.bash
+source ~/Documents/microros_ws/install/local_setup.bash
 
 ros2 topic list
 ```
