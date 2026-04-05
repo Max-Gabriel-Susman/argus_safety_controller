@@ -178,6 +178,10 @@ cd ~/Documents/microros_ws
 gdb-multiarch ~/Documents/microros_ws/firmware/freertos_apps/microros_olimex_e407_extensions/build/micro-ROS.elf
 ```
 
+It should be noted that the hardware used for this project only supports the use of 6 breakpoints at a time.
+
+## USB Runtime Mode
+
 After successfully flashing switch back to runtime mode:
 
 * depower the board
@@ -193,7 +197,7 @@ Check that the board enumerates(You should see something like /dev/ttyACM0):
 ls /dev/ttyACM*
 ```
 
-Start the micro-ROS Agent:
+Start the micro-ROS Agent over USB:
 ```bash
 cd ~/Documents/argus_embedded_ws
 source /opt/ros/$ROS_DISTRO/setup.bash
@@ -295,4 +299,12 @@ ros2 topic pub --once /argus/neural_interface_bridge/control std_msgs/msg/String
 
 ## FreeRTOS
 
-## UART
+### UART
+
+Running the micro-ros agent over UART:
+```bash
+cd ~/Documents/microros_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0 -v6
+```
