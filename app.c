@@ -57,6 +57,9 @@ static FIL neural_csv_file;
 static bool sd_mounted = false;
 static bool csv_open = false;
 
+static volatile int g_sub_rc = 0;
+static volatile const char * g_sub_err = NULL;
+
 static char csv_line_buffer[CSV_LINE_BUFFER_LEN];
 
 /* Verified from your extension tree */
@@ -434,11 +437,21 @@ void appMain(void * argument)
     ROSIDL_GET_MSG_TYPE_SUPPORT(argus_core, msg, NeuralFrame),
     "/argus/neural_interface_bridge/neural_data"));
 
-  RCCHECK(rclc_subscription_init_best_effort(
+  rcl_ret_t sub_rc = rclc_subscription_init_best_effort(
     &control_subscriber,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-    "/argus/neural_interface_bridge/control"));
+    "/argus/neural_interface_bridge/control");
+
+  g_sub_rc = (int)sub_rc;
+
+  if (sub_rc != RCL_RET_OK) {
+    g_sub_err = rcl_get_error_string().str;
+    __asm volatile("bkpt 0");
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
 
   RCCHECK(rclc_timer_init_default(
     &timer,
