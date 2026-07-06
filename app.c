@@ -223,7 +223,7 @@ void appMain(void * argument)
 
   RCCHECK(rclc_node_init_default(
     &node,
-    "argus_neural_interface_bridge",
+    "argus_safety_controller",
     "",
     &support));
 
