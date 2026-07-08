@@ -4,7 +4,7 @@ The **Argus Safety Controller** is a **micro-ROS client** that's currently targe
 
 - [ ] 1. Port this over to the Arty Z7's PS.
 
-- [ ] 2. Migrate the current neural decoding logic from this firmware app to the gateware in the argus-neural-codec repo and provide safe access to that gateware to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
+- [ ] 2. Migrate the current neural decoding logic from this firmware app to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
 
 - [ ] 3. Port this FreeRTOS implementation over to baremetal. 
 
@@ -13,3 +13,7 @@ The **Argus Safety Controller** is a **micro-ROS client** that's currently targe
 This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety and receive inbound commands from the host side.
 
 This project currently targets the **Olimex STM32-E407** running the **FreeRTOS** RTOS.
+
+## Build System
+
+This project currently uses CMake as its build system for the embedded software application. Source files for the embedded application are registered through the Cmake configuration in `UserConfig.cmake`. You'll need to update the `sources` section in `UserConfig.cmake to include new source files so that Vitis includes them in the build. 
