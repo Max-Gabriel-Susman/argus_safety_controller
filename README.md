@@ -1,6 +1,6 @@
 # Argus Safety Controller
 
-The **Argus Safety Controller** is a **micro-ROS client** that's currently targetting the Argus Neural Interface MCU on an Ollimex board. The long term plan is to:
+The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. The long term plan is to:
 
 - [ ] 1. Port this over to the Arty Z7's PS.
 
