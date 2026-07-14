@@ -1,16 +1,12 @@
 # Argus Safety Controller
 
-The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. The long term plan is to:
+The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety once we're receiving inbound commands for stimulus from the host side. The long term plan is to:
 
 - [ ] 1. Migrate the neural decoding logic from the argus neural interface firmware project to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
 
 - [ ] 2. Port the FreeRTOS implementation over to baremetal. 
 
 - [ ] 3. Modify the implementation to be closed loop.
-
-This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety and receive inbound commands from the host side.
-
-This project currently targets the **Olimex STM32-E407** running the **FreeRTOS** RTOS.
 
 ## Build System
 
