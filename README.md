@@ -2,7 +2,7 @@
 
 The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. The long term plan is to:
 
-- [ ] 1. Migrate the current neural decoding logic from the argus neural interface firmware project to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
+- [ ] 1. Migrate the neural decoding logic from the argus neural interface firmware project to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
 
 - [ ] 2. Port the FreeRTOS implementation over to baremetal. 
 
