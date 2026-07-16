@@ -14,3 +14,6 @@ The long-term plan is for the safety controller to be responsible for coordinati
 
 This project currently uses CMake as its build system for the embedded software application. Source files for the embedded application are registered through the Cmake configuration in `UserConfig.cmake`. You'll need to update the `sources` section in `UserConfig.cmake to include new source files so that Vitis includes them in the build. 
 
+## Glossary
+
+Xilinx Support Archive(XSA): A *.xsa file is a Vivado generated handoff file that tells Vitis what hardware exists on the FPGA-SoC design for building a matching embedded software platform.
