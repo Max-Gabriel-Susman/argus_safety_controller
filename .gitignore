@@ -3,6 +3,7 @@
 /log/
 /.colcon/
 /.ros/
+arty_z7_platform/
 
 CMakeCache.txt
 CMakeFiles/
