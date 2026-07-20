@@ -4,6 +4,7 @@
 /.colcon/
 /.ros/
 arty_z7_platform/
+_ide/
 
 CMakeCache.txt
 CMakeFiles/
