@@ -5,6 +5,7 @@
 /.ros/
 arty_z7_platform/
 _ide/
+.rigel_lopper/
 
 CMakeCache.txt
 CMakeFiles/
