@@ -3,7 +3,7 @@
   "type": "PLATFORM",
   "configuration": {
     "description": "",
-    "xsa": "C:/zynq-sandbox/arty_z7_hello_hw/design_1_wrapper.xsa",
+    "xsa": "C:/argus-gateware/argus_neural_codec/design_1_wrapper.xsa",
     "xsaPathInPlatform": "arty_z7_platform/hw/design_1_wrapper.xsa",
     "emulationXsa": "",
     "emulationXsaPathInPlatform": "",
