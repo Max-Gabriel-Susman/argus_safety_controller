@@ -2,6 +2,8 @@
 #ifndef ARGUS_NET_H
     #define ARGUS_NET_H
 
-    // argus_net header content
+    int argus_net_init(void);
+
+    int argus_send_frame(uint32_t sample, float t, const uint16_t *ch);
 
 #endif 

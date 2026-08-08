@@ -30,9 +30,9 @@ set(USER_INCLUDE_DIRECTORIES
 )
 
 #Add any source below, they will be added as Compile sources.
-#Example 1: Adding /proj/data/helloworld.c will pass /proj/data/helloworld.c
-#Example 2: Adding ../../common/helloworld.c will consider the path as relative to this component directory
-#Example 3: Adding ${MY_ENV}/data/helloworld.c are expanded using project-specific environment settings.
+#Example 1: Adding /proj/data/safety_controller.c will pass /proj/data/safety_controller.c
+#Example 2: Adding ../../common/safety_controller.c will consider the path as relative to this component directory
+#Example 3: Adding ${MY_ENV}/data/safety_controller.c are expanded using project-specific environment settings.
 set(USER_COMPILE_SOURCES
 "argus_net.c"
 "../src/main.c"
