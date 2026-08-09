@@ -20,23 +20,31 @@ set(USER_UNDEFINED_SYMBOLS
 "__clang__"
 )
 
-
 # Add any directories below, they will be added as extra include directories.
 # Example 1: Adding /proj/data/include will pass -I/proj/data/include.
 # Example 2: Adding ../../common/include will consider the path as relative to this component directory.
 # Example 3: Adding ${CMAKE_SOURCE_DIR}/data/include to add data/include from this project.
 
 set(USER_INCLUDE_DIRECTORIES
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/port/include
+
+)
+
+file(GLOB_RECURSE LWIP_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/src/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/port/*.c
+)
+set(USER_COMPILE_SOURCES
+    "argus_net.c"
+    "../src/main.c"
+    ${LWIP_SOURCES}
 )
 
 #Add any source below, they will be added as Compile sources.
 #Example 1: Adding /proj/data/safety_controller.c will pass /proj/data/safety_controller.c
 #Example 2: Adding ../../common/safety_controller.c will consider the path as relative to this component directory
 #Example 3: Adding ${MY_ENV}/data/safety_controller.c are expanded using project-specific environment settings.
-set(USER_COMPILE_SOURCES
-"argus_net.c"
-"../src/main.c"
-)
 
 # -----------------------------------------
 
