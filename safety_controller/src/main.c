@@ -56,7 +56,7 @@ int main(void)
             }
             argus_send_frame(sample, (float)sample * 0.05f, channels);
             if ((sample % 20) == 0) {
-                xil_printf("tx %lu\r\n", (unsigned long)sample);
+                xil_printf("tx %d\r\n", (int)sample);
             }
             sample++;
         }

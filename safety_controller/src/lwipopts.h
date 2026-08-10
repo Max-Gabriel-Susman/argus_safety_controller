@@ -25,5 +25,10 @@
 
 #define CHECKSUM_GEN_UDP        1
 #define CHECKSUM_CHECK_UDP      1
+/* Realtek PHY on Arty Z7-20 completes autonegotiation but
+   get_Realtek_phy_speed() returns an invalid value, so AUTODETECT fails.
+   Board is RGMII gigabit (see phy-mode "rgmii-id" in xemacps_g.c);
+   LINKSPEED100 does not link, 1000 does. */
+#define CONFIG_LINKSPEED1000 1
 
 #endif
