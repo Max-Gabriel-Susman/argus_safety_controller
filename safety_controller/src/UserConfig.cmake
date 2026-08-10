@@ -26,19 +26,40 @@ set(USER_UNDEFINED_SYMBOLS
 # Example 3: Adding ${CMAKE_SOURCE_DIR}/data/include to add data/include from this project.
 
 set(USER_INCLUDE_DIRECTORIES
-    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/src/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/port/include
-
+"${CMAKE_CURRENT_SOURCE_DIR}/lwip/src/include"
+"${CMAKE_CURRENT_SOURCE_DIR}/lwip/port/include"
 )
 
-file(GLOB_RECURSE LWIP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/src/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lwip/port/*.c
-)
 set(USER_COMPILE_SOURCES
     "argus_net.c"
     "../src/main.c"
-    ${LWIP_SOURCES}
+    "lwip/port/xtopology.c"
+    "lwip/port/sys_arch_raw.c"
+    "lwip/port/netif/xadapter.c"
+    "lwip/port/netif/xpqueue.c"
+    "lwip/port/netif/xemacpsif.c"
+    "lwip/port/netif/xemacpsif_dma.c"
+    "lwip/port/netif/xemacpsif_hw.c"
+    "lwip/port/netif/xemacpsif_physpeed.c"
+    "lwip/src/core/init.c"
+    "lwip/src/core/def.c"
+    "lwip/src/core/inet_chksum.c"
+    "lwip/src/core/ip.c"
+    "lwip/src/core/mem.c"
+    "lwip/src/core/memp.c"
+    "lwip/src/core/netif.c"
+    "lwip/src/core/pbuf.c"
+    "lwip/src/core/raw.c"
+    "lwip/src/core/stats.c"
+    "lwip/src/core/sys.c"
+    "lwip/src/core/timeouts.c"
+    "lwip/src/core/udp.c"
+    "lwip/src/core/ipv4/etharp.c"
+    "lwip/src/core/ipv4/icmp.c"
+    "lwip/src/core/ipv4/ip4.c"
+    "lwip/src/core/ipv4/ip4_addr.c"
+    "lwip/src/netif/ethernet.c"
+	"lwip/src/core/ipv4/ip4_frag.c"
 )
 
 #Add any source below, they will be added as Compile sources.
