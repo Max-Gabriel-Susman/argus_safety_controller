@@ -40,10 +40,10 @@ Check available versions with:
 ### argus_wire.h
 
 Canonical definition lives in `argus_core/include/argus_core/argus_wire.h`.
-Re-vendor with:
-
-    cp ../argus_core/include/argus_core/argus_wire.h safety_controller/src/
-
+In a properly setup(TODO: document this process) workspace re-vendor with:
+```
+cp ~/Documents/argus_ws/src/argus_core/include/argus_core/argus_wire.h ~/Documents/argus_safety_controller/safety_controller/src/
+```
 Then restore the provenance comment at the top of the copy. Any change to
 this header must land in `argus_core` first, and `argus_sensors` on the Orin
 must be updated in the same change — all three parse the same frames.
