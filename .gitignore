@@ -56,3 +56,8 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 
+vivado*.jou
+vivado*.log
+vivado_pid*.str
+vivado*.backup.jou
+vivado*.backup.log
