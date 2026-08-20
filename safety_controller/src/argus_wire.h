@@ -65,7 +65,7 @@
         uint16_t type;          /* ARGUS_MSG_REPLAY_REQUEST */
         uint32_t seq;           /* echoed by every chunk of the response */
         uint32_t sample_offset; /* absolute index into the dataset */
-        uint16_t sample_count
+        uint16_t sample_count;
         uint16_t flags;
         uint16_t crc;           /* CRC-16/CCITT bytes [0,crc) */
     } argus_replay_request_t;
@@ -77,7 +77,7 @@
         uint16_t version;
         uint16_t type;          /* ARGUS_MSG_REPLAY_CHUNK */
         uint32_t seq;
-        uint32_t sample_offset  /* absolute index of first sample here */
+        uint32_t sample_offset;  /* absolute index of first sample here */
         uint16_t sample_count;
         uint16_t chunk_index;   /* 0 .. chunk_total-1 */
         uint16_t chunk_total;   /* burst length, so gaps are detectable */
