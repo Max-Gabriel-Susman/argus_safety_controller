@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARGUS_CORE_REPO: Max-Gabriel-Susman/argus_core
+  ARGUS_CORE_REF: main
+  # Path to the header inside argus_core
+  UPSTREAM_WIRE: include/argus_core/argus_wire.h
+  VENDORED_WIRE: src/argus_wire.h
+
+jobs:
+  vendor-drift:
+    name: vendored argus_wire.h matches argus_core@main
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
