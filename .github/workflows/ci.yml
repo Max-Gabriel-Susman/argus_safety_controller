@@ -15,7 +15,7 @@ env:
   ARGUS_CORE_REF: main
   # Path to the header inside argus_core
   UPSTREAM_WIRE: include/argus_core/argus_wire.h
-  VENDORED_WIRE: src/safety_controller/argus_wire.h
+  VENDORED_WIRE: safety_controller/src/argus_wire.h
 
 jobs:
   vendor-drift:
