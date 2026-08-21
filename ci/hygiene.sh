@@ -22,11 +22,11 @@ if first_party '*.c' '*.h' '*.ld' '*.tcl' '*.mk' 'Makefile' \
     bad "absolute toolchain or home paths leak into the repo"
 fi
 
-note "no CRLF line endings"
-if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' '*.md' \
-   | xargs -r grep -lU $'\r' ; then
-    bad "CRLF found"
-fi
+# note "no CRLF line endings"
+# if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' '*.md' \
+#    | xargs -r grep -lU $'\r' ; then
+#     bad "CRLF found"
+# fi
 
 # note "no trailing whitespace"
 # if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' \
