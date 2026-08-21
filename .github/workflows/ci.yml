@@ -65,7 +65,7 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
               -Isrc -Ici/stubs \
               -DARGUS_SELFTEST_RUNTIME \
-              ci/wire_selftest.c -o wire_selftest_host
+              safety_controller/src/wire_selftest.c -o wire_selftest_host
           ./wire_selftest_host
  
       - name: Target build (cortex-a9) — static asserts only
@@ -73,7 +73,7 @@ jobs:
           arm-none-eabi-gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
               -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard -marm \
               -Isrc -Ici/stubs \
-              -c ci/wire_selftest.c -o wire_selftest_a9.o
+              -c safety_controller/src/wire_selftest.c -o wire_selftest_a9.o
           arm-none-eabi-size wire_selftest_a9.o
  
   firmware-build:
