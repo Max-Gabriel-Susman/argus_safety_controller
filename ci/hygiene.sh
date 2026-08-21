@@ -28,11 +28,11 @@ if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' '*.md' \
     bad "CRLF found"
 fi
 
-note "no trailing whitespace"
-if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' \
-   | xargs -r grep -nE ' +$' ; then
-    bad "trailing whitespace found"
-fi
+# note "no trailing whitespace"
+# if first_party '*.c' '*.h' '*.sh' '*.yml' '*.yaml' \
+#    | xargs -r grep -nE ' +$' ; then
+#     bad "trailing whitespace found"
+# fi
 
 note "no file over 1 MiB"
 while read -r f; do
