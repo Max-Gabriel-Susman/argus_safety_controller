@@ -45,7 +45,7 @@ while read -r f; do
 done < <(git ls-files)
 
 note "vendored wire header is present where the build expects it"
-[ -f src/argus_wire.h ] || bad "src/argus_wire.h missing"
+[ -f safety_controller/src/argus_wire.h ] || bad "safety_controller/src/argus_wire.h missing"
 
 if [ "$fails" -ne 0 ]; then
     printf '\n%d hygiene check(s) failed\n' "$fails"
