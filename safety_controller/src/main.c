@@ -6,6 +6,7 @@
 #include "lwip/timeouts.h"
 #include "argus_net.h"
 #include "argus_wire.h"
+#include "argus_replay.h"
 
 #define PUBLISH_PERIOD_MS 50
 
@@ -39,6 +40,28 @@ int main(void)
     if (argus_net_init() != 0) {
         xil_printf("ERROR: argus_net_init failed\r\n");
         return -1;
+    }
+
+    /* One-shot fetch, before the telemetry loop. Proves the host->PS path:
+     * request out, chunks in, identity pattern intact. */
+    if (argus_replay_start_fetch(0) != 0) {
+        xil_printf("ERROR: replay etch request failed\r\n");
+    } else {
+        while (!argus_replay_is_done()) {
+            xemacif_input(&server_netif);
+            sys_check_timeouts();
+            argus_replay_service();
+        }
+        if (argus_replay_succeeded()) {
+            const uint16_t *b = argus_replay_buffer();
+            xil_printf("replay ok: [0][0]=%04x [0][5]=%04x [1][0]=%04x [146][95]=%04x\r\n",
+                b[0], b[5],
+                b[ARGUS_MAX_CHANNELS],
+                b[146 * ARGUS_MAX_CHANNELS + 95]);
+        } else {
+            xil_printf("replay FAILED\r\n");
+        }
+        argus_replay_report();
     }
 
     xil_printf("Argus Safety Controller initialized. IP 192.168.1.10\r\n");
