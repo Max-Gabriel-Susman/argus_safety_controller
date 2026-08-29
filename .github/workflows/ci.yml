@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
- 
+
       - name: Fetch upstream argus_core
         uses: actions/checkout@v4
         with:
@@ -32,7 +32,7 @@ jobs:
           path: _upstream
           # If argus_core is private, add:
           # token: ${{ secrets.ARGUS_CORE_TOKEN }}
- 
+
       - name: Diff vendored copy against upstream
         run: |
           up="_upstream/${UPSTREAM_WIRE}"
@@ -47,35 +47,34 @@ jobs:
             exit 1
           fi
           echo "vendored header is in sync ($(sha256sum "$VENDORED_WIRE" | cut -c1-16))"
- 
+
   wire-abi:
     name: wire ABI (host + cortex-a9)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
- 
+
       - name: Install arm-none-eabi toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
           arm-none-eabi-gcc --version | head -1
- 
+
       - name: Host build (x86-64) — static asserts plus runtime CRC vectors
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
-              -Isrc -Ici/stubs \
-              -DARGUS_SELFTEST_RUNTIME \
+              -Isafety_controller/src -Ici/stubs \
               safety_controller/src/wire_selftest.c -o wire_selftest_host
           ./wire_selftest_host
- 
+
       - name: Target build (cortex-a9) — static asserts only
         run: |
           arm-none-eabi-gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
               -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard -marm \
-              -Isrc -Ici/stubs \
+              -Isafety_controller/src -Ici/stubs \
               -c safety_controller/src/wire_selftest.c -o wire_selftest_a9.o
           arm-none-eabi-size wire_selftest_a9.o
- 
+
   firmware-build:
     name: off-target compile
     runs-on: ubuntu-24.04
@@ -83,12 +82,12 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
- 
+
       - name: Install arm-none-eabi toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
- 
+
       - name: Compile allowlisted translation units
         run: |
           if [ ! -f ci/compile_allowlist.txt ]; then
