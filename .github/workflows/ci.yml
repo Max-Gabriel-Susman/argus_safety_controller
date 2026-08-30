@@ -64,15 +64,15 @@ jobs:
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
               -Isafety_controller/src -Ici/stubs \
-              safety_controller/src/wire_selftest.c -o wire_selftest_host
+              ci/wire_selftest.c -o wire_selftest_host
           ./wire_selftest_host
 
       - name: Target build (cortex-a9) — static asserts only
         run: |
           arm-none-eabi-gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
-              -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard -marm \
+              -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard \
               -Isafety_controller/src -Ici/stubs \
-              -c safety_controller/src/wire_selftest.c -o wire_selftest_a9.o
+              -c ci/wire_selftest.c -o /dev/null
           arm-none-eabi-size wire_selftest_a9.o
 
   firmware-build:
