@@ -72,7 +72,7 @@ jobs:
           arm-none-eabi-gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
               -mcpu=cortex-a9 -mfpu=vfpv3 -mfloat-abi=hard \
               -Isafety_controller/src -Ici/stubs \
-              -c ci/wire_selftest.c -o /dev/null
+              -c ci/wire_selftest.c -o wire_selftest_a9.o
           arm-none-eabi-size wire_selftest_a9.o
 
   firmware-build:
