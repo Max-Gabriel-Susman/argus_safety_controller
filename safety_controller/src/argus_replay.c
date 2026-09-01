@@ -19,4 +19,9 @@ int argus_replay_init(void)
     // Needs Impl.
 }
 
+int argus_replay_start_fetch(uint32_t sample_offset)
+{
+    // Needs Impl.
+}
+
 // needs impl.
