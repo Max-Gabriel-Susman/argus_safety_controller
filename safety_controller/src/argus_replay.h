@@ -15,6 +15,9 @@
      * Returns 0 on success. */
     int argus_replay_init(void);
 
+    /* Issues a request for one buffer half starting at
+     * sample_offset. Returns 0 if request went out. */
+    int argus_replay_start_fetch(uint32_t sample_offset);
      // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
