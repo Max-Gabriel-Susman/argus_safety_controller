@@ -11,4 +11,12 @@
 #define ARGUS_RELAY_IP_B 168
 #define ARGUS_RELAY_IP_C 1
 #define ARGUS_RELAY_IP_D 20
+
 // Needs imple.
+
+int argus_replay_init(void)
+{
+    // Needs Impl.
+}
+
+// needs impl.
