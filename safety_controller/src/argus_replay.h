@@ -10,6 +10,11 @@
      * a request came from. Explicit binding keeps captures readable. */
     #define ARGUS_REPLAY_LOCAL_PORT 5011u
 
+    /* Creates the lwIP Protocol Control Block(PCB), binds it,
+     * registers the receive callback, initializes the client.
+     * Returns 0 on success. */
+    int argus_replay_init(void);
+
      // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
