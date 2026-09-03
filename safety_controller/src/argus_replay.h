@@ -20,9 +20,10 @@
     int argus_replay_start_fetch(uint32_t sample_offset);
 
     /* Drive from the main loop. handles retransmit deadlines. */
-    void argus_replay_service(void)
+    void argus_replay_service(void);
 
     int argus_replay_is_done(void);
+    int argus_replay_succeeded(void);
      // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
