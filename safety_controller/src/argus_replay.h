@@ -24,6 +24,9 @@
 
     int argus_replay_is_done(void);
     int argus_replay_succeeded(void);
+
+    /* Sample-major, channel-minor: buffer[s * ARGUS_MAX_CHANNELS + C]. */
+    const uint16_t *argus_replay_buffer(void);
      // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
