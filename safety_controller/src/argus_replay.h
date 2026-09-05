@@ -27,6 +27,9 @@
 
     /* Sample-major, channel-minor: buffer[s * ARGUS_MAX_CHANNELS + C]. */
     const uint16_t *argus_replay_buffer(void);
+
+    /* Prints client counters over UART. */
+    void argus_replay_report(void);
      // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
