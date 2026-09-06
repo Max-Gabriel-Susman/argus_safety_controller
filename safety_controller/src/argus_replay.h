@@ -1,4 +1,17 @@
-// needs impl.
+/* argus_replay.h
+ *
+ * PS-side replay fetch: pulls dataset samples from the host relay over DUP
+ *
+ * Wraps argus_replay_client.h in lwIP raw callbacks. The client owns
+ * the protocol; this file owns only the transport and the destination
+ * buffer.
+ *
+ * The destination is currently a static DDR array rather than the
+ * ping-pong BRAM aperture. That is deliberate for bring-up: it
+ * exercises the network path without depending on the AXI BRAM
+ * controller, which does not exist yet. When it does, swap the buffer
+ * pointer and nothing else changes.
+ */
 
 #ifndef ARGUS_REPLAY_H
     #define ARGUS_REPLAY_H
@@ -30,6 +43,5 @@
 
     /* Prints client counters over UART. */
     void argus_replay_report(void);
-     // needs impl.
 
 #endif /* ARGUS_REPLAY_H */
