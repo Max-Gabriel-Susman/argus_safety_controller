@@ -12,6 +12,9 @@
 #define ARGUS_RELAY_IP_C 1
 #define ARGUS_RELAY_IP_D 20
 
+#define ARGUS_REPLAY_TIMEOUT_MS 200u
+#define ARGUS_REPLAY_MAX_RETRIES 5u
+
 // Needs imple.
 
 int argus_replay_init(void)
