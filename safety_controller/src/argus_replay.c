@@ -13,6 +13,7 @@
 #include "argus_replay.h"
 
 /* Private macros */
+
 /* Relay host. Same machine as the telemetry destination in
  * argus_net.c; if that address moves, both must move together. */
 #define ARGUS_RELAY_IP_A 192
@@ -24,6 +25,9 @@
 #define ARGUS_REPLAY_MAX_RETRIES 5u
 
 /* Private variables */
+
+static struct udp_pcb *g_pcb; /* Protocol Control Block pointer for the UDP session */
+
 // Needs imple.
 
 
