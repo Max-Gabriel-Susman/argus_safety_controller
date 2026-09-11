@@ -27,6 +27,8 @@
 /* Private variables */
 
 static struct udp_pcb *g_pcb; /* Protocol Control Block pointer for the UDP session */
+static ip_addr_t g_relay;
+static argus_replay_client_t g_client;
 
 // Needs imple.
 
