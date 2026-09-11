@@ -30,6 +30,11 @@ static struct udp_pcb *g_pcb; /* Protocol Control Block pointer for the UDP sess
 static ip_addr_t g_relay;
 static argus_replay_client_t g_client;
 
+/* One buffer half. 147 x 96 x 2 = 28224 bytes,
+in Double Data Rate(DDR) Memory for now. */
+static uint16_t g_buffer[
+    ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
+
 // Needs imple.
 
 
