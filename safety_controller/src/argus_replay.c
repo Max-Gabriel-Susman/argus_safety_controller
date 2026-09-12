@@ -30,10 +30,26 @@ static struct udp_pcb *g_pcb; /* Protocol Control Block pointer for the UDP sess
 static ip_addr_t g_relay;
 static argus_replay_client_t g_client;
 
-/* One buffer half. 147 x 96 x 2 = 28224 bytes,
-in Double Data Rate(DDR) Memory for now. */
+/* Destination for one fetch: 147 x 96 x 2 = 28224 bytes.
+ * in Double Data Rate(DDR) Memory for now.
+ *
+ * Sized from ARGUS_REPLAY_SAMPLES_PER_HALF because a rquest is one
+ * buffer half in the eventual PL design, where two BRAM apertures
+ * alternate. There is no ping-pong here. No PL consumer exists yet,
+ * so one buffer in DDR is the whole story. When the AXI BRAM
+ * controller lands, this array goes away and the caller passes in
+ * whicherver aperture is idle. */
 static uint16_t g_buffer[
     ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
+
+/* Scratch for flattening a possibly-chained packet buffer(pbuf). A
+ * chunk is 1372 bytes, which fits one MTU but not necessarily one
+ * pbuf: PBUF_POOL_BUFSIZE governs that, and the Xilinx port does
+ * chain(split one chunk acrross multiple packet buffers). Parsing
+ * p->payload directly would read past the end of the first link and
+ * reject every full-size chunk. */
+static uint8_t g_rx[
+    sizeof(argus_replay_chunk_hdr_t) + ARGUS_REPLAY_MAX_PAYLOAD];
 
 // Needs imple.
 
