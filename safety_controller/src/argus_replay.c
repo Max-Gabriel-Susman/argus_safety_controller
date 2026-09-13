@@ -51,10 +51,13 @@ static uint16_t g_buffer[
 static uint8_t g_rx[
     sizeof(argus_replay_chunk_hdr_t) + ARGUS_REPLAY_MAX_PAYLOAD];
 
-// Needs imple.
-
-
 /* Private routines */
+
+/* The Cortex-A9 global timer, not sys_now(). Independent of lwIP's
+ * timer configuration, so a stalled tick cannot silently disable
+ * retransmits(which would've made a dropped chunk look like a dead
+ * delay). */
+
 // Needs imple.
 
 
