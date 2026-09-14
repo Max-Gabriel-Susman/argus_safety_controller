@@ -56,7 +56,25 @@ static uint8_t g_rx[
 /* The Cortex-A9 global timer, not sys_now(). Independent of lwIP's
  * timer configuration, so a stalled tick cannot silently disable
  * retransmits(which would've made a dropped chunk look like a dead
- * delay). */
+ * relay). */
+static uint32_t argus_now_ms(void)
+{
+    XTime t;
+    XTime_GetTime(&t);
+    return (uint32_t)(t / (COUNTS_PER_SECOND / 1000U));
+}
+
+/* Transport hook for argus_replay_client_t: hands a fully framed
+ * request to lwIP. Keeping this behind a function pointer is what
+ * let the client be validated on the host against ReplayServer
+ * before any of this existed.
+ *
+ * Returns 0 on success, non-zero if the packet could not be queued. */
+static int replay_send(void *ctx, const void *data, uint16_t len)
+{
+    // needs impl
+    return 0;
+}
 
 // Needs imple.
 
