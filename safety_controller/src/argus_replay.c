@@ -72,24 +72,38 @@ static uint32_t argus_now_ms(void)
  * Returns 0 on success, non-zero if the packet could not be queued. */
 static int replay_send(void *ctx, const void *data, uint16_t len)
 {
-    // needs impl
+    /* TODO: implement */
     return 0;
 }
 
-// Needs imple.
-
+/* lwIP raw-API receive callback for replay chunks.
+ *
+ * Flattens the pbuf into a contiguous scratch buffer before handing
+ * it to argus_replay_client_on_packet(). A chunk is 1372 bytes(one
+ * MTU), but not necessarily one pbuf, since PBUF_POOL_BUFSIZE
+ * governs that and the Xilinx port does chain. Parsing p->payload
+ * directly would read past the end of the first link and reject
+ * every full-size chunk.
+ *
+ * NOTE: Owns the pbuf: mus pbuf_free() on every path, including
+ * early returns. */
+static void replay_recv(void *arg, struct udp_pcb *pcb,
+    struct pbuf *p, const ip_addr_t *addr, u16_t port)
+{
+/* TODO: implement */
+}
 
 /* Global routines */
-// Needs imple.
+/* TODO: implement */
 
 int argus_replay_init(void)
 {
-    // Needs Impl.
+    /* TODO: implement */
 }
 
 int argus_replay_start_fetch(uint32_t sample_offset)
 {
-    // Needs Impl.
+    /* TODO: implement */
 }
 
-// needs impl.
+/* TODO: implement */
