@@ -106,4 +106,16 @@ int argus_replay_start_fetch(uint32_t sample_offset)
     /* TODO: implement */
 }
 
+/* Drives the client's retransmit deadlines. Must be called from the
+ * main loop since the client has no timer of its own and only
+ * re-requests missing chunks when polled, so a dropped chunk stalls
+ * the fetch until this runs.
+ *
+ * Uses the Cortex-A9 global timer rather than sys_now(), so lwIP's
+ * timer configuration cannot silently disable recovery. */
+void argus_replay_service(void)
+{
+    argus_replay_client_poll(&g_client, argus_now_ms());
+}
+
 /* TODO: implement */
