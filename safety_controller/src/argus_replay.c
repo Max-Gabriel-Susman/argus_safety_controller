@@ -118,4 +118,13 @@ void argus_replay_service(void)
     argus_replay_client_poll(&g_client, argus_now_ms());
 }
 
+/* True once the fetch has finished, either way: COMPLETE or FAILED.
+ * Callers must check argus_replay_succeeded() to tell them apart: a
+ * loop that stops here without checking will happily read a half
+ * -filled buffer. */
+int argus_replay_is_done(void)
+{
+    return argus_replay_client_is_done(&g_client);
+}
+
 /* TODO: implement */
