@@ -127,4 +127,13 @@ int argus_replay_is_done(void)
     return argus_replay_client_is_done(&g_client);
 }
 
+/* True only for a fetch that completed. is_done() is also true
+ * after the client gives up, so check this before reading the
+ * buffer. A failed fetch leaves it holding whichever chunks did
+ * arrive, which looks like valid data until you reach a gap. */
+int argus_replay_succeeded(void)
+{
+    return g_client.state == ARGUS_REPLAY_COMPLETE;
+}
+
 /* TODO: implement */
