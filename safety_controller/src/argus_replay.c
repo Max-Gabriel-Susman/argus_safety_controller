@@ -1,4 +1,4 @@
-/* argus_replay.c; file lvl documentation Needs impl.*/
+/* argus_replay.c; TODO: file lvl documentation */
 /* Includes */
 #include <string.h>
 #include <stdint.h>
@@ -72,8 +72,21 @@ static uint32_t argus_now_ms(void)
  * Returns 0 on success, non-zero if the packet could not be queued. */
 static int replay_send(void *ctx, const void *data, uint16_t len)
 {
-    /* TODO: implement */
-    return 0;
+    struct pbuf *p;
+    err_t err;
+
+    (void)ctx;
+
+    p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+    if (p == NULL) {
+        return -1;
+    }
+    memcpy(p->payload, data, len);
+
+    err = udp_sendto(g_pcb, p, &g_relay, ARGUS_REPLAY_PORT);
+    pbuf_free(p);
+
+    return (err == ERR_OK) ? 0 : -1;
 }
 
 /* lwIP raw-API receive callback for replay chunks.
@@ -90,20 +103,53 @@ static int replay_send(void *ctx, const void *data, uint16_t len)
 static void replay_recv(void *arg, struct udp_pcb *pcb,
     struct pbuf *p, const ip_addr_t *addr, u16_t port)
 {
-/* TODO: implement */
+    (void)arg;
+    (void)pcb;
+    (void)addr;
+    (void)port;
+
+    if (p == NULL) {
+        return;
+    }
+
+    if (p->tot_len <= sizeof(g_rx)) {
+        pbuf_copy_partial(p, g_rx, p->tot_len, 0);
+        argus_replay_client_on_packet(&g_client, g_rx, (uint16_t)p->tot_len);
+    }
+    /* Oversized datagrams are dropped without counting: they cannot be ours,
+     * and the client's counters should reflect protocol faults only. */
+
+    pbuf_free(p);
 }
 
 /* Global routines */
-/* TODO: implement */
 
 int argus_replay_init(void)
 {
-    /* TODO: implement */
+    g_pcb = udp_new();
+    if (g_pcb == NULL) {
+        return -1;
+    }
+
+    if (udp_bind(g_pcb, IP_ADDR_ANY, ARGUS_REPLAY_LOCAL_PORT) != ERR_OK) {
+        return -1;
+    }
+    udp_recv(g_pcb, replay_recv, NULL);
+
+    IP4_ADDR(&g_relay, ARGUS_RELAY_IP_A, ARGUS_RELAY_IP_B,
+             ARGUS_RELAY_IP_C, ARGUS_RELAY_IP_D);
+
+    return argus_replay_client_init(&g_client, replay_send, NULL,
+                                    ARGUS_MAX_CHANNELS,
+                                    ARGUS_REPLAY_TIMEOUT_MS,
+                                    ARGUS_REPLAY_MAX_RETRIES);
 }
 
 int argus_replay_start_fetch(uint32_t sample_offset)
 {
-    /* TODO: implement */
+    return argus_replay_client_fetch(&g_client, sample_offset,
+                                     ARGUS_REPLAY_SAMPLES_PER_HALF,
+                                     g_buffer, argus_now_ms());
 }
 
 /* Drives the client's retransmit deadlines. Must be called from the
@@ -136,4 +182,19 @@ int argus_replay_succeeded(void)
     return g_client.state == ARGUS_REPLAY_COMPLETE;
 }
 
-/* TODO: implement */
+const uint16_t *argus_replay_buffer(void)
+{
+    return g_buffer;
+}
+
+void argus_replay_report(void)
+{
+    xil_printf("replay: req=%d rtx=%d ok=%d rej=%d to=%d chunks=%d/%d\r\n",
+               (int)g_client.requests_sent,
+               (int)g_client.retransmits_sent,
+               (int)g_client.chunks_accepted,
+               (int)g_client.chunks_rejected,
+               (int)g_client.timeouts,
+               (int)g_client.arrived_count,
+               (int)g_client.total_chunks);
+}
