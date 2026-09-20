@@ -6,7 +6,7 @@
 #include "lwip/udp.h"
 #include "lwip/pbuf.h"
 #include "xil_printf.h"
-#include "xtime_l.h"
+#include "lwip/sys.h"
 
 #include "argus_wire.h"
 #include "argus_replay_client.h"
@@ -53,15 +53,12 @@ static uint8_t g_rx[
 
 /* Private routines */
 
-/* The Cortex-A9 global timer, not sys_now(). Independent of lwIP's
- * timer configuration, so a stalled tick cannot silently disable
- * retransmits(which would've made a dropped chunk look like a dead
- * relay). */
+/* lwIP's millisecond clock, not XTime_GetTime. Same source that drives
+ * sys_check_timeouts(), so the retransmit deadline can't disagree with the
+ * stack's own timers -- and no BSP timer header, which moved under SDT. */
 static uint32_t argus_now_ms(void)
 {
-    XTime t;
-    XTime_GetTime(&t);
-    return (uint32_t)(t / (COUNTS_PER_SECOND / 1000U));
+    return (uint32_t)sys_now();
 }
 
 /* Transport hook for argus_replay_client_t: hands a fully framed
