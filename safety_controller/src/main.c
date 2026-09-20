@@ -1,6 +1,7 @@
 #include "xil_printf.h"
 #include "xparameters.h"
 #include "xil_cache.h"
+#include "sleep.h"
 #include "netif/xadapter.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
@@ -10,6 +11,13 @@
 
 #define PUBLISH_PERIOD_MS 50
 
+/* Bounded wait for the first request to leave. lwIP queues packets for an
+ * unresolved destination when ARP_QUEUEING is on, so this normally succeeds
+ * first try; it only matters if queueing is disabled. Pumping the stack
+ * between attempts is what lets ARP complete either way. */
+#define REPLAY_SEND_ATTEMPTS 200
+#define REPLAY_SEND_GAP_US   10000
+
 static struct netif server_netif;
 static unsigned char mac_ethernet_address[] = {0x00,0x0a,0x35,0x00,0x01,0x02};
 
@@ -18,6 +26,7 @@ int main(void)
     ip_addr_t ipaddr, netmask, gw;
     uint16_t channels[ARGUS_MAX_CHANNELS];
     uint32_t sample = 0;
+    int attempt;
 
     Xil_DCacheDisable();   /* simplest correct choice for bring-up */
 
@@ -42,10 +51,27 @@ int main(void)
         return -1;
     }
 
+    /* Creates the replay PCB, binds it, registers the receive callback and
+     * initialises the client. Without this the client has no send hook and
+     * every fetch fails immediately. */
+    if (argus_replay_init() != 0) {
+        xil_printf("ERROR: argus_replay_init failed\r\n");
+        return -1;
+    }
+
     /* One-shot fetch, before the telemetry loop. Proves the host->PS path:
      * request out, chunks in, identity pattern intact. */
-    if (argus_replay_start_fetch(0) != 0) {
-        xil_printf("ERROR: replay etch request failed\r\n");
+    for (attempt = 0; attempt < REPLAY_SEND_ATTEMPTS; attempt++) {
+        if (argus_replay_start_fetch(0) == 0) {
+            break;
+        }
+        xemacif_input(&server_netif);
+        sys_check_timeouts();
+        usleep(REPLAY_SEND_GAP_US);
+    }
+
+    if (attempt >= REPLAY_SEND_ATTEMPTS) {
+        xil_printf("ERROR: replay fetch request never left the board\r\n");
     } else {
         while (!argus_replay_is_done()) {
             xemacif_input(&server_netif);
