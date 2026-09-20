@@ -71,6 +71,120 @@ directory so CMake re-runs its `file(GLOB)`:
 
     rm -rf safety_controller/build
 
+## Serial console (`screen`)
+
+The safety controller's only direct output is UART0 on MIO 14/15, exposed over
+the same micro-USB cable used for JTAG programming. Everything `xil_printf()`
+writes — the init banner, replay counters, `tx` heartbeats — arrives here and
+nowhere else.
+
+### Find the port
+
+```bash
+ls /dev/ttyUSB*
+```
+
+The Arty Z7 enumerates **two** FTDI channels. The first is JTAG (claimed by
+Vitis), the second is UART. Usually `/dev/ttyUSB1`, but the numbering shifts if
+other USB serial devices are attached, so check rather than assume.
+
+To confirm which is which:
+
+```bash
+for d in /dev/ttyUSB*; do
+  udevadm info -q property -n "$d" | grep -E 'ID_USB_INTERFACE_NUM|ID_MODEL='
+done
+```
+
+Interface `01` is the UART.
+
+### Attach
+
+```bash
+screen /dev/ttyUSB1 115200
+```
+
+Baud is fixed at 115200 by `PCW_UART0_BAUD_RATE` in the block design; 8N1 is
+the default and needs no flags.
+
+**The terminal goes blank and stays blank. That is correct.** `screen` is not a
+command that returns — it hands the terminal to the serial port, and nothing
+appears until the board transmits. A blank screen means "attached and waiting",
+not "broken".
+
+### Detach vs. kill
+
+| Keys | Effect |
+| --- | --- |
+| `Ctrl-A` then `k`, then `y` | **Kill the session and release the port.** This is the one you want. |
+| `Ctrl-A` then `d` | Detach. Session keeps running *and keeps holding the port*. |
+| `Ctrl-C` | Sends a break to the board. Does **not** exit. |
+| Closing the window | Leaves the session detached and the port held. |
+
+Press and release `Ctrl-A` first, then the second key — not together.
+
+The detach/kill distinction is the usual source of trouble. A detached session
+still owns `/dev/ttyUSB1`, so the next `screen` fails with *Device or resource
+busy* and Vitis cannot open the port for its own console either.
+
+```bash
+screen -ls        # list sessions, attached and detached
+screen -r         # reattach to a detached session
+pkill screen      # release the port unconditionally
+```
+
+### Attach before programming
+
+The init banner prints within milliseconds of the ELF starting. Attaching after
+hitting Run in Vitis means an empty screen with no way to distinguish a healthy
+board from a hung one.
+
+Working order:
+
+1. `screen /dev/ttyUSB1 115200`
+2. Vitis → Run (**Program FPGA unchecked** — the platform carries no bitstream)
+3. Watch the banner appear
+4. `Ctrl-A` `k` `y` when done, before the next Run
+
+Step 4 matters: leaving `screen` attached across a re-program is usually fine,
+but if Vitis needs the port it will fail with a permissions or busy error that
+looks unrelated to the serial console.
+
+### Capture a session to a file
+
+Useful when a bug needs to be quoted rather than described:
+
+```bash
+screen -L -Logfile /tmp/argus-uart.log /dev/ttyUSB1 115200
+```
+
+Output is written live, so the log survives even if the board hangs and the
+session has to be killed from another terminal.
+
+### Permissions
+
+If you get *Permission denied* on `/dev/ttyUSB1`:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+Then **log out and back in** — group membership is read at session start, so a
+new terminal alone is not enough.
+
+### Alternatives
+
+`screen` is used here because it is preinstalled on Ubuntu. Equivalents:
+
+```bash
+picocom -b 115200 /dev/ttyUSB1     # exit: Ctrl-A Ctrl-X
+minicom -D /dev/ttyUSB1 -b 115200  # exit: Ctrl-A X
+```
+
+Vitis also has a built-in serial monitor, which avoids the port-contention
+problem entirely — but it does not survive an IDE restart, so it is less useful
+for long capture runs.
+
 ## Documentation
 
 needs impl.
