@@ -42,13 +42,6 @@ int main(void)
         return -1;
     }
 
-    {
-        uint32_t t0 = sys_now();
-        volatile int spin;
-        for (spin = 0; spin < 2000000; spin++) { }
-        xil_printf("clock: t0=%d t1=%d\r\n", (int)t0, (int)sys_now());
-    }
-
     /* One-shot fetch, before the telemetry loop. Proves the host->PS path:
      * request out, chunks in, identity pattern intact. */
     if (argus_replay_start_fetch(0) != 0) {
