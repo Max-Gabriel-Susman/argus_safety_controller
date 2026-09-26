@@ -59,10 +59,14 @@ static void argus_check_clock(void)
     uint32_t t0 = argus_now_ms();
     usleep(10000);
     uint32_t t1 = argus_now_ms();
+    uint32_t dt = t1 - t0;
 
-    if (t1 - t0 < 5u) {
-        xil_printf("WARNING: replay clock advanced %u ms in 10 ms -- "
-                   "retransmit timeouts will not fire\r\n", (unsigned)(t1 - t0));
+    xil_printf("replay clock: %u ms measured over 10 ms sleep\r\n", (unsigned)dt);
+
+    if (dt < 5u) {
+        xil_printf("WARNING: replay clock too slow -- retransmit timeouts will not fire\r\n");
+    } else if (dt > 20u) {
+        xil_printf("WARNING: replay clock too fast -- timeouts fire before replies arrive\r\n");
     }
 }
 

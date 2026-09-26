@@ -31,16 +31,38 @@ static uint16_t g_fetch_buf[ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
 
 /* --- acquisition chain checks ------------------------------------------- */
 
-/* Seqlock read of one frame. The assembler swaps banks every sweep
- * (33.3 us); 96 AXI reads from the A9 take roughly 20 us, so most attempts
- * land clean and the rest are retried rather than silently torn. */
+/* Seqlock read of one frame, aligned to the bank swap.
+ *
+ * The assembler swaps banks every sweep (33.3 us). 96 GP0 reads from the A9
+ * at -O0 come to roughly 32 us -- inside the window, but only just, so the
+ * read must start the moment a swap happens rather than at a random point
+ * in the window. Spin until FRAME_INDEX changes, then read; if it changed
+ * again by the end, the read was too slow this time and is retried.
+ *
+ * A read that is consistently too slow for the window is a hardware
+ * problem (the register block should hold the bank while the PS reads),
+ * not something more attempts can fix. */
+#define ACQ_READ_ATTEMPTS 8
+#define ACQ_SWAP_SPIN_MAX 200000u
+
 static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
 {
-    for (int attempt = 0; attempt < 4; attempt++) {
-        uint32_t fi0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
+    for (int attempt = 0; attempt < ACQ_READ_ATTEMPTS; attempt++) {
+        uint32_t fi_prev = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
+        uint32_t fi0     = fi_prev;
+        uint32_t spins   = 0;
+
+        while (fi0 == fi_prev) {
+            fi0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
+            if (++spins > ACQ_SWAP_SPIN_MAX) {
+                return -2;   /* frames not advancing at all */
+            }
+        }
+
         for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
             out[n] = (uint16_t)argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
         }
+
         uint32_t fi1 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
         if (fi0 == fi1) {
             *frame_index = fi1;
@@ -63,8 +85,14 @@ static void acq_frame_check(int ext)
     uint16_t frame[ARGUS_MAX_CHANNELS];
     uint32_t fi;
 
-    if (acq_read_frame(frame, &fi) != 0) {
-        xil_printf("acq frame: torn 4 times\r\n");
+    int rc = acq_read_frame(frame, &fi);
+    if (rc == -2) {
+        xil_printf("acq frame: FRAME_INDEX not advancing\r\n");
+        return;
+    }
+    if (rc != 0) {
+        xil_printf("acq frame: torn %d times even aligned to the swap\r\n",
+                   ACQ_READ_ATTEMPTS);
         return;
     }
 
