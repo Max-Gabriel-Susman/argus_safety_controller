@@ -71,14 +71,96 @@ directory so CMake re-runs its `file(GLOB)`:
 
     rm -rf safety_controller/build
 
-## Serial console (`screen`)
+The BSP exports its timer API from `xiltimer` (`xiltimer.h`,
+`xtimer_config.h`), not the standalone library's `xtime_l.h`, which stays in
+`libsrc/` and is not installed to the include directory. Code that needs
+`XTime_GetTime` or `COUNTS_PER_SECOND` includes the `xiltimer` headers.
+
+## Running on hardware
+
+A full run involves three things on the workstation — the dataset relay, a
+serial console, and Vitis — plus the board. They need to be brought up in a
+particular order, because the firmware starts talking to both the relay and
+the UART within milliseconds of the ELF loading.
+
+### Prerequisites
+
+**Cabling.** Micro-USB from the Arty Z7's PROG/UART port (carries both JTAG
+and the serial console) and Ethernet from the board to the workstation's
+USB adapter.
+
+**Network.** The board is `192.168.1.10`. The workstation must be
+`192.168.1.20` on the adapter the board is plugged into; the address is
+hardcoded in both `argus_net.c` and `argus_replay.c`. Persistent config via
+NetworkManager:
+
+```bash
+nmcli con add type ethernet ifname enx00e04c685e7e con-name argus-link \
+  ipv4.method manual ipv4.addresses 192.168.1.20/24 ipv4.never-default yes
+nmcli con up argus-link
+```
+
+`never-default` matters: without it a route to the internet can be installed
+through a link that has none. Confirm with:
+
+```bash
+ip route get 192.168.1.10      # must say "dev enx...", not "via 10.x.x.x"
+```
+
+`Packet filtered` from a `10.x` address on ping means the adapter has no
+address and traffic is going out the default route.
+
+**Firmware.** The platform must be current with the gateware
+(`arty_z7_platform` → Settings → `vitis-comp.json` → Update XSA, then build
+the platform, then the application). JTAG download is volatile; every power
+cycle means re-running from Vitis.
+
+### 1. Start the dataset relay
+
+The firmware fetches replay samples from `argus_sim`'s relay over UDP. Start
+it first — the firmware's priming fetches retry until a relay answers, but
+starting it late costs a few seconds of `failures` counts and makes the
+early UART output harder to read.
+
+```bash
+cd ~/Documents/argus_ws && source install/setup.bash
+ros2 run argus_sim dataset_relay_node
+```
+
+With no `dataset_path` parameter it serves a synthetic identity pattern
+(chip in bits 15:14, channel in 13:8, sample index in 7:0), which is what
+the frame checks in the firmware expect. Expected startup output:
+
+```
+[WARN] [dataset_relay]: no dataset_path set; serving 30000 samples of synthetic identity pattern
+[INFO] [dataset_relay]: replay server on 0.0.0.0:5010 -- 30000 samples x 96 channels, 7 samples/chunk, loop=true
+```
+
+Relay-side diagnostics, in a spare terminal:
+
+```bash
+ros2 topic echo /dataset_relay/status      # requests, chunks, bad (malformed requests)
+sudo tcpdump -i enx00e04c685e7e -n udp port 5010
+```
+
+`bad=` climbing on the status topic means requests are arriving but failing
+validation — struct packing between the x86 relay and the Cortex-A9
+firmware, which the `wire-abi` CI job exists to catch. A request visible in
+`tcpdump` with no replies is the firewall (`sudo ufw status`; the relay's
+port 5010 must be allowed if ufw is active).
+
+### 2. Attach the serial console
 
 The safety controller's only direct output is UART0 on MIO 14/15, exposed over
 the same micro-USB cable used for JTAG programming. Everything `xil_printf()`
 writes — the init banner, replay counters, `tx` heartbeats — arrives here and
 nowhere else.
 
-### Find the port
+**Attach before programming.** The init banner prints within milliseconds of
+the ELF starting. Attaching after hitting Run in Vitis means an empty screen
+with no way to distinguish a healthy board from a hung one.
+
+#### Find the port
 
 ```bash
 ls /dev/ttyUSB*
@@ -98,7 +180,7 @@ done
 
 Interface `01` is the UART.
 
-### Attach
+#### Attach
 
 ```bash
 screen /dev/ttyUSB1 115200
@@ -112,7 +194,7 @@ command that returns — it hands the terminal to the serial port, and nothing
 appears until the board transmits. A blank screen means "attached and waiting",
 not "broken".
 
-### Detach vs. kill
+#### Detach vs. kill
 
 | Keys | Effect |
 | --- | --- |
@@ -133,24 +215,7 @@ screen -r         # reattach to a detached session
 pkill screen      # release the port unconditionally
 ```
 
-### Attach before programming
-
-The init banner prints within milliseconds of the ELF starting. Attaching after
-hitting Run in Vitis means an empty screen with no way to distinguish a healthy
-board from a hung one.
-
-Working order:
-
-1. `screen /dev/ttyUSB1 115200`
-2. Vitis → Run (**Program FPGA unchecked** — the platform carries no bitstream)
-3. Watch the banner appear
-4. `Ctrl-A` `k` `y` when done, before the next Run
-
-Step 4 matters: leaving `screen` attached across a re-program is usually fine,
-but if Vitis needs the port it will fail with a permissions or busy error that
-looks unrelated to the serial console.
-
-### Capture a session to a file
+#### Capture a session to a file
 
 Useful when a bug needs to be quoted rather than described:
 
@@ -161,7 +226,7 @@ screen -L -Logfile /tmp/argus-uart.log /dev/ttyUSB1 115200
 Output is written live, so the log survives even if the board hangs and the
 session has to be killed from another terminal.
 
-### Permissions
+#### Permissions
 
 If you get *Permission denied* on `/dev/ttyUSB1`:
 
@@ -172,7 +237,7 @@ sudo usermod -aG dialout $USER
 Then **log out and back in** — group membership is read at session start, so a
 new terminal alone is not enough.
 
-### Alternatives
+#### Alternatives
 
 `screen` is used here because it is preinstalled on Ubuntu. Equivalents:
 
@@ -184,6 +249,110 @@ minicom -D /dev/ttyUSB1 -b 115200  # exit: Ctrl-A X
 Vitis also has a built-in serial monitor, which avoids the port-contention
 problem entirely — but it does not survive an IDE restart, so it is less useful
 for long capture runs.
+
+### 3. Run from Vitis
+
+FLOW panel → Component `safety_controller` → **Run**.
+
+The launch configuration lives in `safety_controller/_ide/launch.json`
+(Settings → launch.json in the explorer). Two fields matter:
+
+- **Program Device** must be **ticked**. The platform carries a bitstream and
+  the acquisition chain lives in the PL. An AXI read against unprogrammed PL
+  hangs the A9 with no timeout, which is why the firmware's first action
+  after the banner is an AXI read — a hang there is unmistakable.
+- **Bitstream File** must point at the current `.bit`. Vitis copies it into
+  `_ide/bitstream/` on Update XSA under the same name, so the path usually
+  survives a platform update, but the timestamp is worth checking after one.
+
+If Vitis refuses to launch with *a debug session is already running*, that is
+its internal session state, not a process. Terminate from the toolbar, or:
+
+```bash
+pgrep -af 'xsdb|hw_server'
+pkill -f temp_xsdb_launch_script
+```
+
+and restart Vitis if the dialog persists. Leave `hw_server` alone unless JTAG
+itself is misbehaving.
+
+The XSDB console should show `fpga -file ...neural_codec_wrapper.bit`, then
+`ps7_init`, `ps7_post_config`, `dow ...safety_controller.elf`, and
+`Running`. If `fpga -file` names a bitstream that does not exist, the
+launch.json edit did not save (`Ctrl-S` in the form editor).
+
+### 4. What you should see
+
+```
+Initializing Argus Safety Controller...
+acq id=41435131
+acq status=00000001 frames/s=30012
+acq frame 30040: [0]=0087 [95]=9f87 idx=87 expect=87 bad=0
+Using default Speed from design
+Configuring PHY for fixed 1000 Mbps mode
+link speed for phy address 1: 1000
+replay ok: [0][0]=0000 [0][5]=0500 [1][0]=0001 [146][95]=9F92
+replay: req=1 rtx=0 ok=21 rej=0 to=0 chunks=21/21
+stream: priming
+Argus Safety Controller initialized. IP 192.168.1.10
+tx 0
+stream: halves=2 underruns=0 failures=0 next=294 pl: half=0 row=41 c0=0 c1=0
+acq frame 31219: [0]=0029 [95]=9f29 idx=29 (ext) bad=0
+tx 20
+tx 40
+```
+
+Line by line:
+
+- **`acq id=41435131`** — "ACQ1". The register block is at the expected
+  address. `deadbeef` means the address map disagrees with `argus_acq.h`.
+- **`acq status=00000001 frames/s=30012`** — bit 0 is `ready` (init sequence
+  complete), bit 1 would be assembler overrun. The frame rate is exactly
+  125e6 / (119 × 35); a few counts either way is `usleep` jitter.
+- **`acq frame N: ... bad=0`** — one 96-word frame read under a seqlock. Every
+  word must carry its own chip and channel; `bad` counts those that don't.
+  Before streaming, `idx` is the chips' sweep counter and must equal
+  `expect` (the assembler's frame counter, modulo 256). After streaming it
+  is the dataset sample number and is labelled `(ext)`.
+- **`replay ok: ... [146][95]=9F92`** — one-shot fetch into DDR: chip 2,
+  channel 31, sample 146. Proves the host→PS path before the PL depends on
+  it. There is a one-second pause before this while ARP resolves.
+- **`replay: req=1 rtx=0 ok=21 rej=0 to=0`** — one request, no retransmits,
+  all 21 chunks accepted, none rejected, no timeouts.
+- **`stream: halves=N underruns=U failures=F next=S pl: half=H row=R c0=.. c1=..`**
+  — every 100 telemetry frames. `halves` counts BRAM halves filled; `next`
+  is the dataset offset of the next fetch; `pl:` is the fetcher's current
+  half and row and whether either half is waiting for a refill.
+
+**`underruns` is the number to watch over a long run.** Zero and holding
+means the relay is keeping up. Climbing steadily means the link cannot
+sustain 5.76 MB/s with margin — the measured delivery rate is about 6.5 MB/s,
+so headroom is thin. The fix for that is jumbo frames on the link, not
+firmware.
+
+### Working order, condensed
+
+1. Relay running (terminal 1)
+2. `screen /dev/ttyUSB1 115200` (terminal 2)
+3. Vitis → Run, with Program Device ticked
+4. Watch the banner, then the `(ext) bad=0` line
+5. `Ctrl-A` `k` `y` when done, before the next Run
+
+### Troubleshooting
+
+| Symptom | Meaning |
+| --- | --- |
+| Banner prints, then nothing | A9 hung on the first AXI read. PL not programmed: Program Device unticked or bitstream path stale. |
+| `acq id=deadbeef` | Register block answering at the wrong offset. Address map vs `argus_acq.h`. |
+| `status=00000000` after `id` | `ready` never asserted. Check `CTRL` reads back `1`, not `3` — soft reset held. |
+| `frames/s=0` | Sweeping but no frames closing. `slot_last` or assembler reset. |
+| `replay fetch request never left the board` | `udp_sendto` failed. Interface not up, or `argus_replay_init` failed silently. |
+| `replay FAILED` with `to=` nonzero, `ok=0` | Requests leaving, no replies. Relay not running, firewall, or wrong host address. |
+| `replay FAILED` with `rej=` nonzero | Replies arriving but rejected. `chunk_total` or `channel_count` mismatch between relay and firmware. |
+| `acq frame: torn 4 times` | 96-word AXI read consistently slower than one sweep. Would be surprising. |
+| `WARNING: replay clock advanced 0 ms` | `xiltimer` clock not running. Retransmits will never fire; fetches hang on any loss. |
+| *Device or resource busy* on `screen` | Detached session holding the port. `screen -ls`, then kill it. |
+| `Packet filtered` on ping | Host adapter has no address; traffic going out the default route. |
 
 ## Documentation
 
