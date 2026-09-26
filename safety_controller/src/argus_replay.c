@@ -1,21 +1,20 @@
-/* argus_replay.c; TODO: file lvl documentation */
-/* Includes */
+/* argus_replay.c -- see argus_replay.h */
+
 #include <string.h>
 #include <stdint.h>
 
 #include "lwip/udp.h"
 #include "lwip/pbuf.h"
 #include "xil_printf.h"
-#include "lwip/sys.h"
+#include "xtime_l.h"
 
 #include "argus_wire.h"
 #include "argus_replay_client.h"
+#include "argus_acq.h"
 #include "argus_replay.h"
 
-/* Private macros */
-
-/* Relay host. Same machine as the telemetry destination in
- * argus_net.c; if that address moves, both must move together. */
+/* Relay host. Same machine as the telemetry destination in argus_net.c;
+ * if that address moves, both must move together. */
 #define ARGUS_RELAY_IP_A 192
 #define ARGUS_RELAY_IP_B 168
 #define ARGUS_RELAY_IP_C 1
@@ -24,49 +23,30 @@
 #define ARGUS_REPLAY_TIMEOUT_MS 200u
 #define ARGUS_REPLAY_MAX_RETRIES 5u
 
-/* Private variables */
-
-static struct udp_pcb *g_pcb; /* Protocol Control Block pointer for the UDP session */
+static struct udp_pcb *g_pcb;
 static ip_addr_t g_relay;
 static argus_replay_client_t g_client;
 
-/* Destination for one fetch: 147 x 96 x 2 = 28224 bytes.
- * in Double Data Rate(DDR) Memory for now.
- *
- * Sized from ARGUS_REPLAY_SAMPLES_PER_HALF because a rquest is one
- * buffer half in the eventual PL design, where two BRAM apertures
- * alternate. There is no ping-pong here. No PL consumer exists yet,
- * so one buffer in DDR is the whole story. When the AXI BRAM
- * controller lands, this array goes away and the caller passes in
- * whicherver aperture is idle. */
-static uint16_t g_buffer[
-    ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
+/* Scratch for flattening a possibly-chained pbuf. A chunk is 1372 bytes,
+ * which fits one MTU but not necessarily one pbuf: PBUF_POOL_BUFSIZE governs
+ * that, and the Xilinx port does chain. Parsing p->payload directly would
+ * read past the end of the first link and reject every full-size chunk. */
+static uint8_t g_rx[sizeof(argus_replay_chunk_hdr_t) + ARGUS_REPLAY_MAX_PAYLOAD];
 
-/* Scratch for flattening a possibly-chained packet buffer(pbuf). A
- * chunk is 1372 bytes, which fits one MTU but not necessarily one
- * pbuf: PBUF_POOL_BUFSIZE governs that, and the Xilinx port does
- * chain(split one chunk acrross multiple packet buffers). Parsing
- * p->payload directly would read past the end of the first link and
- * reject every full-size chunk. */
-static uint8_t g_rx[
-    sizeof(argus_replay_chunk_hdr_t) + ARGUS_REPLAY_MAX_PAYLOAD];
+/* --- time ---------------------------------------------------------------- */
 
-/* Private routines */
-
-/* lwIP's millisecond clock, not XTime_GetTime. Same source that drives
- * sys_check_timeouts(), so the retransmit deadline can't disagree with the
- * stack's own timers -- and no BSP timer header, which moved under SDT. */
+/* The Cortex-A9 global timer, not sys_now(). Independent of lwIP's timer
+ * configuration, so a stalled tick cannot silently disable retransmits --
+ * which would make a dropped chunk look like a dead relay. */
 static uint32_t argus_now_ms(void)
 {
-    return (uint32_t)sys_now();
+    XTime t;
+    XTime_GetTime(&t);
+    return (uint32_t)(t / (COUNTS_PER_SECOND / 1000U));
 }
 
-/* Transport hook for argus_replay_client_t: hands a fully framed
- * request to lwIP. Keeping this behind a function pointer is what
- * let the client be validated on the host against ReplayServer
- * before any of this existed.
- *
- * Returns 0 on success, non-zero if the packet could not be queued. */
+/* --- transport ----------------------------------------------------------- */
+
 static int replay_send(void *ctx, const void *data, uint16_t len)
 {
     struct pbuf *p;
@@ -86,19 +66,8 @@ static int replay_send(void *ctx, const void *data, uint16_t len)
     return (err == ERR_OK) ? 0 : -1;
 }
 
-/* lwIP raw-API receive callback for replay chunks.
- *
- * Flattens the pbuf into a contiguous scratch buffer before handing
- * it to argus_replay_client_on_packet(). A chunk is 1372 bytes(one
- * MTU), but not necessarily one pbuf, since PBUF_POOL_BUFSIZE
- * governs that and the Xilinx port does chain. Parsing p->payload
- * directly would read past the end of the first link and reject
- * every full-size chunk.
- *
- * NOTE: Owns the pbuf: mus pbuf_free() on every path, including
- * early returns. */
-static void replay_recv(void *arg, struct udp_pcb *pcb,
-    struct pbuf *p, const ip_addr_t *addr, u16_t port)
+static void replay_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                        const ip_addr_t *addr, u16_t port)
 {
     (void)arg;
     (void)pcb;
@@ -113,13 +82,11 @@ static void replay_recv(void *arg, struct udp_pcb *pcb,
         pbuf_copy_partial(p, g_rx, p->tot_len, 0);
         argus_replay_client_on_packet(&g_client, g_rx, (uint16_t)p->tot_len);
     }
-    /* Oversized datagrams are dropped without counting: they cannot be ours,
-     * and the client's counters should reflect protocol faults only. */
 
     pbuf_free(p);
 }
 
-/* Global routines */
+/* --- one-shot -------------------------------------------------------------- */
 
 int argus_replay_init(void)
 {
@@ -142,46 +109,26 @@ int argus_replay_init(void)
                                     ARGUS_REPLAY_MAX_RETRIES);
 }
 
-int argus_replay_start_fetch(uint32_t sample_offset)
+int argus_replay_start_fetch(uint32_t sample_offset, uint16_t *dst)
 {
     return argus_replay_client_fetch(&g_client, sample_offset,
                                      ARGUS_REPLAY_SAMPLES_PER_HALF,
-                                     g_buffer, argus_now_ms());
+                                     dst, argus_now_ms());
 }
 
-/* Drives the client's retransmit deadlines. Must be called from the
- * main loop since the client has no timer of its own and only
- * re-requests missing chunks when polled, so a dropped chunk stalls
- * the fetch until this runs.
- *
- * Uses the Cortex-A9 global timer rather than sys_now(), so lwIP's
- * timer configuration cannot silently disable recovery. */
 void argus_replay_service(void)
 {
     argus_replay_client_poll(&g_client, argus_now_ms());
 }
 
-/* True once the fetch has finished, either way: COMPLETE or FAILED.
- * Callers must check argus_replay_succeeded() to tell them apart: a
- * loop that stops here without checking will happily read a half
- * -filled buffer. */
 int argus_replay_is_done(void)
 {
     return argus_replay_client_is_done(&g_client);
 }
 
-/* True only for a fetch that completed. is_done() is also true
- * after the client gives up, so check this before reading the
- * buffer. A failed fetch leaves it holding whichever chunks did
- * arrive, which looks like valid data until you reach a gap. */
 int argus_replay_succeeded(void)
 {
     return g_client.state == ARGUS_REPLAY_COMPLETE;
-}
-
-const uint16_t *argus_replay_buffer(void)
-{
-    return g_buffer;
 }
 
 void argus_replay_report(void)
@@ -194,4 +141,169 @@ void argus_replay_report(void)
                (int)g_client.timeouts,
                (int)g_client.arrived_count,
                (int)g_client.total_chunks);
+}
+
+/* --- streaming ------------------------------------------------------------- */
+
+/* The PL plays one half while the PS refills the other. The PL reports a
+ * half consumed when it flips out of it; the PS fetches the next block of
+ * samples straight into that half -- the client's memcpy lands in BRAM
+ * over AXI -- and acks. If the PL flips back into a half before its ack,
+ * it sets underrun and keeps playing stale data; counted here, not fatal.
+ *
+ * At most one fetch is in flight. The request cadence is one half every
+ * 147 sweeps (4.9 ms at 30 kS/s), and the measured delivery time for a
+ * half is around 4.3 ms, so this is not generous. Underruns here are the
+ * signal to widen the link, not a bug in this file. */
+
+typedef enum {
+    STREAM_OFF,
+    STREAM_PRIME0,   /* fetching half 0 */
+    STREAM_PRIME1,   /* fetching half 1 */
+    STREAM_RUN
+} stream_state_t;
+
+static stream_state_t g_stream = STREAM_OFF;
+static uint32_t g_next_sample;    /* dataset offset of the next fetch */
+static int      g_in_flight;      /* half being fetched, or -1 */
+
+static uint32_t g_halves_filled;
+static uint32_t g_underruns;
+static uint32_t g_fetch_failures;
+
+static int stream_fetch_into(int half)
+{
+    if (argus_replay_start_fetch(g_next_sample, ARGUS_BRAM_HALF(half)) != 0) {
+        g_fetch_failures++;
+        return -1;
+    }
+    g_in_flight = half;
+    return 0;
+}
+
+static void stream_enter_ext_mode(void)
+{
+    /* Soft reset with ext_mode set, then release: playback starts at row 0
+     * of half 0 with no partial first frame. */
+    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_SOFT_RESET | ARGUS_ACQ_CTRL_EXT_MODE);
+    argus_acq_wr(ARGUS_ACQ_REPLAY_ACK,
+                 ARGUS_ACQ_RA_CONSUMED0 | ARGUS_ACQ_RA_CONSUMED1 | ARGUS_ACQ_RA_UNDERRUN);
+    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE | ARGUS_ACQ_CTRL_EXT_MODE);
+}
+
+void argus_replay_stream_begin(uint32_t first_sample)
+{
+    g_next_sample    = first_sample;
+    g_in_flight      = -1;
+    g_halves_filled  = 0;
+    g_underruns      = 0;
+    g_fetch_failures = 0;
+
+    if (stream_fetch_into(0) == 0) {
+        g_stream = STREAM_PRIME0;
+    } else {
+        /* Retried from the service loop. */
+        g_stream = STREAM_PRIME0;
+        g_in_flight = -1;
+    }
+}
+
+void argus_replay_stream_service(void)
+{
+    uint32_t rs;
+
+    if (g_stream == STREAM_OFF) {
+        return;
+    }
+
+    argus_replay_service();
+
+    switch (g_stream) {
+
+    case STREAM_PRIME0:
+        if (g_in_flight < 0) {
+            stream_fetch_into(0);
+        } else if (argus_replay_is_done()) {
+            if (argus_replay_succeeded()) {
+                g_halves_filled++;
+                g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
+                g_in_flight = -1;
+                if (stream_fetch_into(1) == 0) {
+                    g_stream = STREAM_PRIME1;
+                }
+            } else {
+                g_fetch_failures++;
+                g_in_flight = -1;   /* retry same offset next call */
+            }
+        }
+        break;
+
+    case STREAM_PRIME1:
+        if (g_in_flight < 0) {
+            stream_fetch_into(1);
+        } else if (argus_replay_is_done()) {
+            if (argus_replay_succeeded()) {
+                g_halves_filled++;
+                g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
+                g_in_flight = -1;
+                stream_enter_ext_mode();
+                g_stream = STREAM_RUN;
+            } else {
+                g_fetch_failures++;
+                g_in_flight = -1;
+            }
+        }
+        break;
+
+    case STREAM_RUN:
+        rs = argus_acq_rd(ARGUS_ACQ_REPLAY_STATUS);
+
+        if (rs & ARGUS_ACQ_RS_UNDERRUN) {
+            g_underruns++;
+            argus_acq_wr(ARGUS_ACQ_REPLAY_ACK, ARGUS_ACQ_RA_UNDERRUN);
+        }
+
+        if (g_in_flight < 0) {
+            /* Refill whichever half the PL has finished with. Half 0 first
+             * if both are pending, which only happens after an underrun. */
+            if (rs & ARGUS_ACQ_RS_CONSUMED0) {
+                stream_fetch_into(0);
+            } else if (rs & ARGUS_ACQ_RS_CONSUMED1) {
+                stream_fetch_into(1);
+            }
+        } else if (argus_replay_is_done()) {
+            if (argus_replay_succeeded()) {
+                g_halves_filled++;
+                g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
+                argus_acq_wr(ARGUS_ACQ_REPLAY_ACK,
+                             (g_in_flight == 0) ? ARGUS_ACQ_RA_CONSUMED0
+                                                : ARGUS_ACQ_RA_CONSUMED1);
+            } else {
+                /* Same half, same offset, next time round. */
+                g_fetch_failures++;
+            }
+            g_in_flight = -1;
+        }
+        break;
+
+    case STREAM_OFF:
+    default:
+        break;
+    }
+}
+
+void argus_replay_stream_report(void)
+{
+    uint32_t rs = argus_acq_rd(ARGUS_ACQ_REPLAY_STATUS);
+
+    xil_printf("stream: halves=%u underruns=%u failures=%u next=%u"
+               " pl: half=%u row=%u c0=%u c1=%u\r\n",
+               (unsigned)g_halves_filled,
+               (unsigned)g_underruns,
+               (unsigned)g_fetch_failures,
+               (unsigned)g_next_sample,
+               (unsigned)(rs & ARGUS_ACQ_RS_PLAY_HALF),
+               (unsigned)ARGUS_ACQ_RS_ROW(rs),
+               (unsigned)((rs >> 1) & 1u),
+               (unsigned)((rs >> 2) & 1u));
 }

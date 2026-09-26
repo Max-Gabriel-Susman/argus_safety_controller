@@ -1,47 +1,65 @@
 /* argus_replay.h
  *
- * PS-side replay fetch: pulls dataset samples from the host relay over DUP
+ * PS-side replay: pulls dataset samples from the host relay over UDP and
+ * keeps the PL's ping-pong BRAM fed.
  *
- * Wraps argus_replay_client.h in lwIP raw callbacks. The client owns
- * the protocol; this file owns only the transport and the destination
- * buffer.
+ * Wraps argus_replay_client.h in lwIP raw callbacks. The client owns the
+ * protocol; this file owns transport, the destination, and the streaming
+ * state machine that decides which half to fill next.
  *
- * The destination is currently a static DDR array rather than the
- * ping-pong BRAM aperture. That is deliberate for bring-up: it
- * exercises the network path without depending on the AXI BRAM
- * controller, which does not exist yet. When it does, swap the buffer
- * pointer and nothing else changes.
+ * Two ways to use it:
+ *
+ *   ONE-SHOT   argus_replay_start_fetch() into a caller-supplied buffer,
+ *              then argus_replay_service() until argus_replay_is_done().
+ *              Bring-up and the loopback comparison.
+ *
+ *   STREAMING  argus_replay_stream_begin() primes both BRAM halves, switches
+ *              the chain to external mode, then argus_replay_stream_service()
+ *              refills whichever half the PL reports consumed. Runs forever
+ *              from the main loop.
  */
 
 #ifndef ARGUS_REPLAY_H
-    #define ARGUS_REPLAY_H
+#define ARGUS_REPLAY_H
 
-    #include <stdint.h>
+#include <stdint.h>
 
-    /* Local UDP port the PS binds for replay traffic. Not part of
-     * the wire contract; the relay answers whatever source address
-     * a request came from. Explicit binding keeps captures readable. */
-    #define ARGUS_REPLAY_LOCAL_PORT 5011u
+/* Local UDP port the PS binds for replay traffic. Not part of the wire
+ * contract -- the relay answers whatever source address a request came from
+ * -- but binding explicitly keeps captures readable. */
+#define ARGUS_REPLAY_LOCAL_PORT 5011u
 
-    /* Creates the lwIP Protocol Control Block(PCB), binds it,
-     * registers the receive callback, initializes the client.
-     * Returns 0 on success. */
-    int argus_replay_init(void);
+/* Creates the PCB, binds it, registers the receive callback, and initialises
+ * the client. Returns 0 on success. */
+int argus_replay_init(void);
 
-    /* Issues a request for one buffer half starting at
-     * sample_offset. Returns 0 if request went out. */
-    int argus_replay_start_fetch(uint32_t sample_offset);
+/* --- one-shot -------------------------------------------------------------- */
 
-    /* Drive from the main loop. handles retransmit deadlines. */
-    void argus_replay_service(void);
+/* Issues a request for one buffer half starting at `sample_offset` into
+ * `dst`, which must hold ARGUS_REPLAY_SAMPLES_PER_HALF x ARGUS_MAX_CHANNELS
+ * samples. Returns 0 if the request went out. */
+int argus_replay_start_fetch(uint32_t sample_offset, uint16_t *dst);
 
-    int argus_replay_is_done(void);
-    int argus_replay_succeeded(void);
+/* Drive from the main loop. Handles retransmit deadlines. */
+void argus_replay_service(void);
 
-    /* Sample-major, channel-minor: buffer[s * ARGUS_MAX_CHANNELS + C]. */
-    const uint16_t *argus_replay_buffer(void);
+int argus_replay_is_done(void);
+int argus_replay_succeeded(void);
 
-    /* Prints client counters over UART. */
-    void argus_replay_report(void);
+/* Prints client counters over UART. */
+void argus_replay_report(void);
+
+/* --- streaming ------------------------------------------------------------- */
+
+/* Starts the ping-pong. Fetches half 0, then half 1, then puts the chain in
+ * external mode with a soft reset so playback starts at row 0 of half 0.
+ * Non-blocking: progress happens in argus_replay_stream_service(). */
+void argus_replay_stream_begin(uint32_t first_sample);
+
+/* Drive from the main loop. Calls argus_replay_service() itself. */
+void argus_replay_stream_service(void);
+
+/* Streaming counters over UART: halves filled, underruns seen, retries. */
+void argus_replay_stream_report(void);
 
 #endif /* ARGUS_REPLAY_H */

@@ -1,13 +1,13 @@
 #include "xil_printf.h"
 #include "xparameters.h"
 #include "xil_cache.h"
-#include "xil_io.h"
 #include "sleep.h"
 #include "netif/xadapter.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
 #include "argus_net.h"
 #include "argus_wire.h"
+#include "argus_acq.h"
 #include "argus_replay.h"
 
 #define PUBLISH_PERIOD_MS 50
@@ -19,23 +19,17 @@
 #define REPLAY_SEND_ATTEMPTS 200
 #define REPLAY_SEND_GAP_US   10000
 
-/* Acquisition chain register block, argus_acq_top on M_AXI_GP0. The base
- * is pinned in the block design (tools/bd_add_acq.tcl) so this stays valid
- * across regenerations. Hardcoded rather than taken from xparameters.h:
- * module references get no driver entry in the SDT flow, so there is
- * nothing there to take it from. */
-#define ARGUS_ACQ_BASE    0x43C00000u
-#define ARGUS_ACQ_CTRL    (ARGUS_ACQ_BASE + 0x000u)
-#define ARGUS_ACQ_STATUS  (ARGUS_ACQ_BASE + 0x004u)
-#define ARGUS_ACQ_FRAME   (ARGUS_ACQ_BASE + 0x008u)
-#define ARGUS_ACQ_ID      (ARGUS_ACQ_BASE + 0x00Cu)
-#define ARGUS_ACQ_FRAME_BASE (ARGUS_ACQ_BASE + 0x100u)
-
-#define ARGUS_ACQ_ID_EXPECT 0x41435131u   /* "ACQ1" */
-#define ARGUS_ACQ_CH_PER_CHIP 32
+/* Telemetry frames between status lines. */
+#define STATUS_EVERY_FRAMES  100
 
 static struct netif server_netif;
 static unsigned char mac_ethernet_address[] = {0x00,0x0a,0x35,0x00,0x01,0x02};
+
+/* One buffer half in DDR, for the one-shot network check only. Streaming
+ * fetches land in BRAM directly. */
+static uint16_t g_fetch_buf[ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
+
+/* --- acquisition chain checks ------------------------------------------- */
 
 /* Seqlock read of one frame. The assembler swaps banks every sweep
  * (33.3 us); 96 AXI reads from the A9 take roughly 20 us, so most attempts
@@ -43,11 +37,11 @@ static unsigned char mac_ethernet_address[] = {0x00,0x0a,0x35,0x00,0x01,0x02};
 static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
 {
     for (int attempt = 0; attempt < 4; attempt++) {
-        uint32_t fi0 = Xil_In32(ARGUS_ACQ_FRAME);
+        uint32_t fi0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
         for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
-            out[n] = (uint16_t)Xil_In32(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
+            out[n] = (uint16_t)argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
         }
-        uint32_t fi1 = Xil_In32(ARGUS_ACQ_FRAME);
+        uint32_t fi1 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
         if (fi0 == fi1) {
             *frame_index = fi1;
             return 0;
@@ -57,10 +51,14 @@ static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
 }
 
 /* Every word must carry its own chip and channel, and the whole frame must
- * share one sample index. The model advances that index once per sweep and
- * the assembler counts frames in separate logic, so the two must also agree
- * modulo 256 -- the first cross-check between them on hardware. */
-static void acq_frame_check(void)
+ * share one sample index. That holds for both sources: the chips' built-in
+ * IDENT pattern and the relay's synthetic one use the same layout.
+ *
+ * With the built-in source the index is the chips' sweep counter, which
+ * must agree with the assembler's frame counter modulo 256. With the
+ * external source it is the dataset sample number and that cross-check
+ * does not apply. */
+static void acq_frame_check(int ext)
 {
     uint16_t frame[ARGUS_MAX_CHANNELS];
     uint32_t fi;
@@ -81,36 +79,45 @@ static void acq_frame_check(void)
         }
     }
 
-    xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
-               (unsigned)fi, frame[0],
-               ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
-               idx, (unsigned)((fi - 1u) & 0xFFu), bad);
+    if (ext) {
+        xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x (ext) bad=%d\r\n",
+                   (unsigned)fi, frame[0],
+                   ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
+                   idx, bad);
+    } else {
+        xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
+                   (unsigned)fi, frame[0],
+                   ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
+                   idx, (unsigned)((fi - 1u) & 0xFFu), bad);
+    }
 }
 
-/* Acquisition chain smoke test. Runs before the network stack on purpose:
- * an AXI read against unprogrammed PL hangs the A9 with no timeout, and if
- * that happens it should be the first thing after the banner, not buried
- * under lwIP output. Three lines prove the 125 MHz clock, reset release,
- * the init sequence, the SPI sweep, the assembler, and the AXI path. */
+/* Runs before the network stack on purpose: an AXI read against
+ * unprogrammed PL hangs the A9 with no timeout, and if that happens it
+ * should be the first thing after the banner, not buried under lwIP output.
+ * Three lines prove the 125 MHz clock, reset release, the init sequence,
+ * the SPI sweep, the assembler, and the AXI path. */
 static void acq_smoke_test(void)
 {
-    uint32_t id = Xil_In32(ARGUS_ACQ_ID);
+    uint32_t id = argus_acq_rd(ARGUS_ACQ_ID);
     xil_printf("acq id=%08x%s\r\n", (unsigned)id,
                (id == ARGUS_ACQ_ID_EXPECT) ? "" : "  (expected 41435131)");
 
-    Xil_Out32(ARGUS_ACQ_CTRL, 1u);   /* enable, no soft reset */
+    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE);
     usleep(50000);
 
-    uint32_t f0 = Xil_In32(ARGUS_ACQ_FRAME);
+    uint32_t f0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
     usleep(1000000);
-    uint32_t f1 = Xil_In32(ARGUS_ACQ_FRAME);
+    uint32_t f1 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
 
     xil_printf("acq status=%08x frames/s=%u\r\n",
-               (unsigned)Xil_In32(ARGUS_ACQ_STATUS),
+               (unsigned)argus_acq_rd(ARGUS_ACQ_STATUS),
                (unsigned)(f1 - f0));
 
-    acq_frame_check();
+    acq_frame_check(0);
 }
+
+/* --- main ----------------------------------------------------------------- */
 
 int main(void)
 {
@@ -144,18 +151,15 @@ int main(void)
         return -1;
     }
 
-    /* Creates the replay PCB, binds it, registers the receive callback and
-     * initialises the client. Without this the client has no send hook and
-     * every fetch fails immediately. */
     if (argus_replay_init() != 0) {
         xil_printf("ERROR: argus_replay_init failed\r\n");
         return -1;
     }
 
-    /* One-shot fetch, before the telemetry loop. Proves the host->PS path:
-     * request out, chunks in, identity pattern intact. */
+    /* One-shot fetch into DDR: proves the host->PS path before anything
+     * depends on it. */
     for (attempt = 0; attempt < REPLAY_SEND_ATTEMPTS; attempt++) {
-        if (argus_replay_start_fetch(0) == 0) {
+        if (argus_replay_start_fetch(0, g_fetch_buf) == 0) {
             break;
         }
         xemacif_input(&server_netif);
@@ -172,22 +176,27 @@ int main(void)
             argus_replay_service();
         }
         if (argus_replay_succeeded()) {
-            const uint16_t *b = argus_replay_buffer();
             xil_printf("replay ok: [0][0]=%04x [0][5]=%04x [1][0]=%04x [146][95]=%04x\r\n",
-                b[0], b[5],
-                b[ARGUS_MAX_CHANNELS],
-                b[146 * ARGUS_MAX_CHANNELS + 95]);
+                g_fetch_buf[0], g_fetch_buf[5],
+                g_fetch_buf[ARGUS_MAX_CHANNELS],
+                g_fetch_buf[146 * ARGUS_MAX_CHANNELS + 95]);
         } else {
             xil_printf("replay FAILED\r\n");
         }
         argus_replay_report();
     }
 
+    /* Streaming: prime both BRAM halves, switch the chips to the external
+     * source, then keep the PL fed from the main loop. */
+    argus_replay_stream_begin(0);
+    xil_printf("stream: priming\r\n");
+
     xil_printf("Argus Safety Controller initialized. IP 192.168.1.10\r\n");
 
     while (1) {
         xemacif_input(&server_netif);   /* required even TX-only: ARP */
         sys_check_timeouts();
+        argus_replay_stream_service();
 
         /* crude pacing for bring-up; replace with XTime_GetTime() */
         static volatile uint32_t tick = 0;
@@ -199,6 +208,10 @@ int main(void)
             argus_send_frame(sample, (float)sample * 0.05f, channels);
             if ((sample % 20) == 0) {
                 xil_printf("tx %d\r\n", (int)sample);
+            }
+            if ((sample % STATUS_EVERY_FRAMES) == 0) {
+                argus_replay_stream_report();
+                acq_frame_check(argus_acq_rd(ARGUS_ACQ_CTRL) & ARGUS_ACQ_CTRL_EXT_MODE);
             }
             sample++;
         }
