@@ -6,7 +6,13 @@
 #include "lwip/udp.h"
 #include "lwip/pbuf.h"
 #include "xil_printf.h"
-#include "xtime_l.h"
+#include "sleep.h"
+
+/* The SDT-flow BSP exports the timer API from xiltimer rather than the
+ * standalone library's xtime_l.h, which is no longer installed once
+ * xiltimer is present. Same XTime_GetTime, same COUNTS_PER_SECOND. */
+#include "xiltimer.h"
+#include "xtimer_config.h"
 
 #include "argus_wire.h"
 #include "argus_replay_client.h"
@@ -43,6 +49,21 @@ static uint32_t argus_now_ms(void)
     XTime t;
     XTime_GetTime(&t);
     return (uint32_t)(t / (COUNTS_PER_SECOND / 1000U));
+}
+
+/* If this clock does not advance, poll() never times out and a lost chunk
+ * hangs the fetch loop instead of triggering a retransmit. Worth ten
+ * milliseconds at boot to know. */
+static void argus_check_clock(void)
+{
+    uint32_t t0 = argus_now_ms();
+    usleep(10000);
+    uint32_t t1 = argus_now_ms();
+
+    if (t1 - t0 < 5u) {
+        xil_printf("WARNING: replay clock advanced %u ms in 10 ms -- "
+                   "retransmit timeouts will not fire\r\n", (unsigned)(t1 - t0));
+    }
 }
 
 /* --- transport ----------------------------------------------------------- */
@@ -102,6 +123,8 @@ int argus_replay_init(void)
 
     IP4_ADDR(&g_relay, ARGUS_RELAY_IP_A, ARGUS_RELAY_IP_B,
              ARGUS_RELAY_IP_C, ARGUS_RELAY_IP_D);
+
+    argus_check_clock();
 
     return argus_replay_client_init(&g_client, replay_send, NULL,
                                     ARGUS_MAX_CHANNELS,
