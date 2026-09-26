@@ -29,11 +29,63 @@
 #define ARGUS_ACQ_STATUS  (ARGUS_ACQ_BASE + 0x004u)
 #define ARGUS_ACQ_FRAME   (ARGUS_ACQ_BASE + 0x008u)
 #define ARGUS_ACQ_ID      (ARGUS_ACQ_BASE + 0x00Cu)
+#define ARGUS_ACQ_FRAME_BASE (ARGUS_ACQ_BASE + 0x100u)
 
 #define ARGUS_ACQ_ID_EXPECT 0x41435131u   /* "ACQ1" */
+#define ARGUS_ACQ_CH_PER_CHIP 32
 
 static struct netif server_netif;
 static unsigned char mac_ethernet_address[] = {0x00,0x0a,0x35,0x00,0x01,0x02};
+
+/* Seqlock read of one frame. The assembler swaps banks every sweep
+ * (33.3 us); 96 AXI reads from the A9 take roughly 20 us, so most attempts
+ * land clean and the rest are retried rather than silently torn. */
+static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
+{
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint32_t fi0 = Xil_In32(ARGUS_ACQ_FRAME);
+        for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+            out[n] = (uint16_t)Xil_In32(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
+        }
+        uint32_t fi1 = Xil_In32(ARGUS_ACQ_FRAME);
+        if (fi0 == fi1) {
+            *frame_index = fi1;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Every word must carry its own chip and channel, and the whole frame must
+ * share one sample index. The model advances that index once per sweep and
+ * the assembler counts frames in separate logic, so the two must also agree
+ * modulo 256 -- the first cross-check between them on hardware. */
+static void acq_frame_check(void)
+{
+    uint16_t frame[ARGUS_MAX_CHANNELS];
+    uint32_t fi;
+
+    if (acq_read_frame(frame, &fi) != 0) {
+        xil_printf("acq frame: torn 4 times\r\n");
+        return;
+    }
+
+    uint8_t idx = (uint8_t)(frame[0] & 0xFFu);
+    int bad = 0;
+    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+        uint16_t want = (uint16_t)(((n / ARGUS_ACQ_CH_PER_CHIP) << 14)
+                                 | ((n % ARGUS_ACQ_CH_PER_CHIP) << 8)
+                                 | idx);
+        if (frame[n] != want) {
+            bad++;
+        }
+    }
+
+    xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
+               (unsigned)fi, frame[0],
+               ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
+               idx, (unsigned)((fi - 1u) & 0xFFu), bad);
+}
 
 /* Acquisition chain smoke test. Runs before the network stack on purpose:
  * an AXI read against unprogrammed PL hangs the A9 with no timeout, and if
@@ -56,6 +108,8 @@ static void acq_smoke_test(void)
     xil_printf("acq status=%08x frames/s=%u\r\n",
                (unsigned)Xil_In32(ARGUS_ACQ_STATUS),
                (unsigned)(f1 - f0));
+
+    acq_frame_check();
 }
 
 int main(void)
