@@ -83,6 +83,41 @@ serial console, and Vitis — plus the board. They need to be brought up in a
 particular order, because the firmware starts talking to both the relay and
 the UART within milliseconds of the ELF loading.
 
+### Serial console
+
+115200 8N1 on the second of the two ports the Arty enumerates:
+
+```bash
+screen /dev/ttyUSB1 115200
+```
+
+Permission denied means you're not in `dialout` — add yourself, then log
+out and back in:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+**Exiting.** `screen` has two exits and only one releases the port:
+
+| Keys | Effect |
+| --- | --- |
+| `Ctrl-A` then `d` | Detach — session keeps running, keeps holding the port |
+| `Ctrl-A` then `k` then `y` | Kill the session, release the port |
+
+Closing the terminal window is a detach, not a kill. The orphaned session
+still owns `/dev/ttyUSB1`, so the next `screen` shows nothing and Vitis
+can't open the port. It reads as a dead board.
+
+Recover:
+
+```bash
+screen -ls                    # list sessions
+screen -r                     # reattach if there's exactly one
+screen -X -S <session> quit   # kill a specific one from outside
+pkill screen                  # kill them all
+```
+
 ### Prerequisites
 
 **Cabling.** Micro-USB from the Arty Z7's PROG/UART port (carries both JTAG
