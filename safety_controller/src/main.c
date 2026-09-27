@@ -36,59 +36,62 @@ static uint16_t g_fetch_buf[ARGUS_REPLAY_SAMPLES_PER_HALF * ARGUS_MAX_CHANNELS];
 
 /* --- acquisition chain checks ------------------------------------------- */
 
-/* Seqlock read of one frame, aligned to the bank swap.
+/* Frame read under a hardware hold.
  *
- * The assembler swaps banks every sweep (33.3 us). 96 GP0 reads from the A9
- * at -O0 come to roughly 32 us -- inside the window, but only just, so the
- * read must start the moment a swap happens rather than at a random point
- * in the window. Spin until FRAME_INDEX changes, then read; if it changed
- * again by the end, the read was too slow this time and is retried.
+ * This was a seqlock. It could never have worked: measured on this board,
+ * a GP0 read costs 1083 ns and all 96 words come to 114 us, against a
+ * 33.3 us sweep. The read is 3.4x too slow to fit between two bank swaps,
+ * so every attempt tore and no number of retries would have changed that.
  *
- * A read that is consistently too slow for the window is a hardware
- * problem (the register block should hold the bank while the PS reads),
- * not something more attempts can fix. */
-#define ACQ_READ_ATTEMPTS 8
-#define ACQ_SWAP_SPIN_MAX 200000u
+ * The assembler freezes the read bank instead. CTRL.hold stops the bank
+ * alternating and STATUS.held acknowledges that the freeze is in effect --
+ * poll it rather than assuming the write took immediately, since one last
+ * swap can land on the clock hold registers. FRAME_INDEX freezes alongside
+ * and names the frame actually in the bank.
+ *
+ * The writer does not stall. It keeps filling its own bank and discards
+ * what it completes, so a read costs roughly four frames. At one read
+ * every five seconds that is four frames in a hundred and fifty thousand.
+ *
+ * CTRL is read back rather than rewritten from scratch: enable and
+ * ext_mode are both live by the time the main loop calls this. */
+#define ACQ_HOLD_SPIN_MAX 100000u
 
 static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
 {
-    for (int attempt = 0; attempt < ACQ_READ_ATTEMPTS; attempt++) {
-        uint32_t fi_prev = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
-        uint32_t fi0     = fi_prev;
-        uint32_t spins   = 0;
+    uint32_t ctrl  = argus_acq_rd(ARGUS_ACQ_CTRL);
+    uint32_t spins = 0;
 
-        while (fi0 == fi_prev) {
-            fi0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
-            if (++spins > ACQ_SWAP_SPIN_MAX) {
-                return -2;   /* frames not advancing at all */
-            }
-        }
+    argus_acq_wr(ARGUS_ACQ_CTRL, ctrl | ARGUS_ACQ_CTRL_HOLD);
 
-        for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
-            out[n] = (uint16_t)argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
-        }
-
-        uint32_t fi1 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
-        if (fi0 == fi1) {
-            *frame_index = fi1;
-            return 0;
+    while ((argus_acq_rd(ARGUS_ACQ_STATUS) & ARGUS_ACQ_STATUS_HELD) == 0u) {
+        if (++spins > ACQ_HOLD_SPIN_MAX) {
+            argus_acq_wr(ARGUS_ACQ_CTRL, ctrl);
+            return -2;
         }
     }
-    return -1;
+
+    *frame_index = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
+
+    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+        out[n] = (uint16_t)argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
+    }
+
+    argus_acq_wr(ARGUS_ACQ_CTRL, ctrl);
+    return 0;
 }
 
-/* How long a frame read actually takes, against the 33.3 us window it has
- * to fit inside.
+/* How long a frame read costs, for the record.
+ *
+ * Kept after the hold went in because it is the number that justifies the
+ * hold existing, and because a regression here -- a slower interconnect
+ * after a block design change, say -- is otherwise invisible now that the
+ * read cannot fail.
  *
  * Two figures because they isolate different causes. A FRAME word comes
  * from the assembler's registered read port and a FRAME_INDEX word does
  * not, so the difference between them is that port; the absolute size of
- * either is the GP0 round trip plus whatever the -O0 loop costs on top.
- * If both are large, the bus and the loop are the problem and no amount of
- * retrying helps. If only the frame figure is large, the read port is.
- *
- * Deliberately not seqlock-protected: this times the bus, and torn data
- * does not affect a timing measurement. */
+ * either is the GP0 round trip plus whatever the -O0 loop costs on top. */
 static void acq_timing_report(void)
 {
     XTime t0, t1;
@@ -112,7 +115,7 @@ static void acq_timing_report(void)
     (void)sink;
 
     xil_printf("acq timing: reg %u ns/read, 96-word frame read %u us,"
-               " window 33 us\r\n",
+               " sweep 33 us (read is held)\r\n",
                (unsigned)reg_ns, (unsigned)frame_us);
 }
 
@@ -121,22 +124,18 @@ static void acq_timing_report(void)
  * IDENT pattern and the relay's synthetic one use the same layout.
  *
  * With the built-in source the index is the chips' sweep counter, which
- * must agree with the assembler's frame counter modulo 256. With the
- * external source it is the dataset sample number and that cross-check
- * does not apply. */
+ * must agree with the assembler's frame counter modulo 256. Frames dropped
+ * during a hold do not break that: FRAME_INDEX carries the sweep number of
+ * the frame in the bank, not a count of frames published. With the
+ * external source the index is the dataset sample number and the
+ * cross-check does not apply. */
 static void acq_frame_check(int ext)
 {
     uint16_t frame[ARGUS_MAX_CHANNELS];
     uint32_t fi;
 
-    int rc = acq_read_frame(frame, &fi);
-    if (rc == -2) {
-        xil_printf("acq frame: FRAME_INDEX not advancing\r\n");
-        return;
-    }
-    if (rc != 0) {
-        xil_printf("acq frame: torn %d times even aligned to the swap\r\n",
-                   ACQ_READ_ATTEMPTS);
+    if (acq_read_frame(frame, &fi) != 0) {
+        xil_printf("acq frame: hold never took effect\r\n");
         return;
     }
 
@@ -178,6 +177,7 @@ static void acq_smoke_test(void)
     argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE);
     usleep(50000);
 
+    /* Measured with hold clear, so this is the true sweep rate. */
     uint32_t f0 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
     usleep(1000000);
     uint32_t f1 = argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);

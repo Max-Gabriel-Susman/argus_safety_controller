@@ -36,10 +36,17 @@
 #define ARGUS_ACQ_CTRL_ENABLE     (1u << 0)
 #define ARGUS_ACQ_CTRL_SOFT_RESET (1u << 1)
 #define ARGUS_ACQ_CTRL_EXT_MODE   (1u << 2)
+/* Freeze the frame read bank. The assembler keeps sweeping and discards
+ * what it completes, so hold for as long as a coherent read needs and no
+ * longer. FRAME_INDEX freezes with it and names the frame being read. */
+#define ARGUS_ACQ_CTRL_HOLD       (1u << 3)
 
 /* STATUS */
 #define ARGUS_ACQ_STATUS_READY    (1u << 0)
 #define ARGUS_ACQ_STATUS_OVERRUN  (1u << 1)
+/* The freeze is in effect and the bank has settled. Poll this after
+ * setting CTRL.hold; do not assume the write took immediately. */
+#define ARGUS_ACQ_STATUS_HELD     (1u << 2)
 
 /* REPLAY_STATUS */
 #define ARGUS_ACQ_RS_PLAY_HALF    (1u << 0)
