@@ -6,12 +6,19 @@
 #include "netif/xadapter.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
+#include "lwip/sys.h"
 #include "argus_net.h"
 #include "argus_wire.h"
 #include "argus_acq.h"
 #include "argus_replay.h"
 
+/* Telemetry cadence. One held frame per period; see the main loop. */
 #define PUBLISH_PERIOD_MS 50
+
+/* Sweep rate of the fabric: 125 MHz / (35 slots x 119 clocks) = 30012.0 Hz.
+ * FRAME_INDEX at this rate is the frame's timestamp in seconds since the
+ * chain was last reset. acq_smoke_test() measures frames/s against it. */
+#define ARGUS_ACQ_SWEEP_HZ 30012.0f
 
 /* Bounded wait for the first replay request to leave. lwIP queues packets
  * for an unresolved destination when ARP_QUEUEING is on, so this normally
@@ -208,7 +215,11 @@ int main(void)
 {
     ip_addr_t ipaddr, netmask, gw;
     uint16_t channels[ARGUS_MAX_CHANNELS];
-    uint32_t sample = 0;
+    uint32_t fi;
+    uint32_t last_tx_ms;
+    uint32_t now_ms;
+    uint32_t tx_count   = 0;
+    uint32_t tx_skipped = 0;
     int attempt;
 
     Xil_DCacheDisable();   /* simplest correct choice for bring-up */
@@ -278,27 +289,49 @@ int main(void)
 
     xil_printf("Argus Safety Controller initialized. IP 192.168.1.10\r\n");
 
+    /* Telemetry is a snapshot, not a stream: one held frame every
+     * PUBLISH_PERIOD_MS, out of the ~1500 the fabric produces in that
+     * window. It proves the whole path -- relay, BRAM, chips, master,
+     * assembler, hold, UDP, receiver -- carries what the chips saw. What
+     * the PL should reduce those 1500 frames to is the codec's job and is
+     * deliberately not decided here.
+     *
+     * sample on the wire is FRAME_INDEX: the fabric's own sweep count,
+     * which under ext_mode is also the offset into what the relay served,
+     * because stream_enter_ext_mode() resets the chain at row 0 of half 0.
+     * t is that count in seconds at the sweep rate. Neither is disturbed
+     * by a hold: FRAME_INDEX names the frame in the bank, not a count of
+     * frames published. */
+    last_tx_ms = sys_now();
+
     while (1) {
         xemacif_input(&server_netif);   /* required even TX-only: ARP */
         sys_check_timeouts();
         argus_replay_stream_service();
 
-        /* crude pacing for bring-up; replace with XTime_GetTime() */
-        static volatile uint32_t tick = 0;
-        if (++tick > 200000) {
-            tick = 0;
-            for (int i = 0; i < ARGUS_MAX_CHANNELS; i++) {
-                channels[i] = (uint16_t)(2048 + (sample * 7 + i * 13) % 1500);
-            }
-            argus_send_frame(sample, (float)sample * 0.05f, channels);
-            if ((sample % 20) == 0) {
-                xil_printf("tx %d\r\n", (int)sample);
-            }
-            if ((sample % STATUS_EVERY_FRAMES) == 0) {
-                argus_replay_stream_report();
-                acq_frame_check(argus_acq_rd(ARGUS_ACQ_CTRL) & ARGUS_ACQ_CTRL_EXT_MODE);
-            }
-            sample++;
+        now_ms = sys_now();
+        if ((uint32_t)(now_ms - last_tx_ms) < PUBLISH_PERIOD_MS) {
+            continue;
+        }
+        last_tx_ms = now_ms;
+
+        /* A hold that never took effect is a fabric problem, not a reason
+         * to publish a torn frame. Skip, count, and let the tx line show it. */
+        if (acq_read_frame(channels, &fi) != 0) {
+            tx_skipped++;
+            continue;
+        }
+
+        argus_send_frame(fi, (float)fi / ARGUS_ACQ_SWEEP_HZ, channels);
+        tx_count++;
+
+        if ((tx_count % 20) == 0) {
+            xil_printf("tx %u frame %u skipped %u\r\n",
+                       (unsigned)tx_count, (unsigned)fi, (unsigned)tx_skipped);
+        }
+        if ((tx_count % STATUS_EVERY_FRAMES) == 0) {
+            argus_replay_stream_report();
+            acq_frame_check(argus_acq_rd(ARGUS_ACQ_CTRL) & ARGUS_ACQ_CTRL_EXT_MODE);
         }
     }
     return 0;
