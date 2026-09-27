@@ -29,7 +29,10 @@
 #define ARGUS_ACQ_REPLAY_ACK      (ARGUS_ACQ_BASE + 0x014u)
 #define ARGUS_ACQ_FRAME_BASE      (ARGUS_ACQ_BASE + 0x100u)
 
-#define ARGUS_ACQ_ID_EXPECT       0x41435131u   /* "ACQ1" */
+/* Fabric revision. Bumped with id_value in argus_acq_axi.vhd on any change
+ * this header depends on; acq_smoke_test() checks it before anything else.
+ * ACQ2 is the first build with CTRL.hold / STATUS.held. */
+#define ARGUS_ACQ_ID_EXPECT       0x41435132u   /* "ACQ2" */
 #define ARGUS_ACQ_CH_PER_CHIP     32
 
 /* CTRL */

@@ -167,12 +167,24 @@ static void acq_frame_check(int ext)
  * unprogrammed PL hangs the A9 with no timeout, and if that happens it
  * should be the first thing after the banner, not buried under lwIP output.
  * Three lines prove the 125 MHz clock, reset release, the init sequence,
- * the SPI sweep, the assembler, and the AXI path. */
+ * the SPI sweep, the assembler, and the AXI path.
+ *
+ * The ID is a fabric revision. A mismatch almost always means the bitstream
+ * predates the firmware -- RTL rebuilt, Vivado not run, or the XSA not
+ * re-read into the platform -- and every later check would then be poking
+ * registers the fabric does not have. Say so here, once, on the first
+ * line, where it cannot be mistaken for anything else. */
 static void acq_smoke_test(void)
 {
     uint32_t id = argus_acq_rd(ARGUS_ACQ_ID);
-    xil_printf("acq id=%08x%s\r\n", (unsigned)id,
-               (id == ARGUS_ACQ_ID_EXPECT) ? "" : "  (expected 41435131)");
+
+    if (id == ARGUS_ACQ_ID_EXPECT) {
+        xil_printf("acq id=%08x\r\n", (unsigned)id);
+    } else {
+        xil_printf("acq id=%08x  EXPECTED %08x -- stale bitstream?"
+                   " Rebuild in Vivado, re-read the XSA, rebuild the platform.\r\n",
+                   (unsigned)id, (unsigned)ARGUS_ACQ_ID_EXPECT);
+    }
 
     argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE);
     usleep(50000);
