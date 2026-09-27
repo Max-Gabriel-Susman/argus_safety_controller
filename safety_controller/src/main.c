@@ -2,6 +2,7 @@
 #include "xparameters.h"
 #include "xil_cache.h"
 #include "sleep.h"
+#include "xiltimer.h"
 #include "netif/xadapter.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
@@ -21,6 +22,10 @@
 
 /* Telemetry frames between status lines. */
 #define STATUS_EVERY_FRAMES  100
+
+/* A9 global timer, 333.333 MHz. Matches ARGUS_TIMER_HZ in xtopology.c;
+ * the 0.1% truncation is irrelevant at microsecond resolution. */
+#define ARGUS_TICKS_PER_US 333u
 
 static struct netif server_netif;
 static unsigned char mac_ethernet_address[] = {0x00,0x0a,0x35,0x00,0x01,0x02};
@@ -70,6 +75,45 @@ static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
         }
     }
     return -1;
+}
+
+/* How long a frame read actually takes, against the 33.3 us window it has
+ * to fit inside.
+ *
+ * Two figures because they isolate different causes. A FRAME word comes
+ * from the assembler's registered read port and a FRAME_INDEX word does
+ * not, so the difference between them is that port; the absolute size of
+ * either is the GP0 round trip plus whatever the -O0 loop costs on top.
+ * If both are large, the bus and the loop are the problem and no amount of
+ * retrying helps. If only the frame figure is large, the read port is.
+ *
+ * Deliberately not seqlock-protected: this times the bus, and torn data
+ * does not affect a timing measurement. */
+static void acq_timing_report(void)
+{
+    XTime t0, t1;
+    volatile uint32_t sink = 0;
+
+    XTime_GetTime(&t0);
+    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+        sink += argus_acq_rd(ARGUS_ACQ_FRAME_INDEX);
+    }
+    XTime_GetTime(&t1);
+    uint32_t reg_ns = (uint32_t)(((t1 - t0) * 1000u)
+                     / (ARGUS_TICKS_PER_US * ARGUS_MAX_CHANNELS));
+
+    XTime_GetTime(&t0);
+    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+        sink += argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
+    }
+    XTime_GetTime(&t1);
+    uint32_t frame_us = (uint32_t)((t1 - t0) / ARGUS_TICKS_PER_US);
+
+    (void)sink;
+
+    xil_printf("acq timing: reg %u ns/read, 96-word frame read %u us,"
+               " window 33 us\r\n",
+               (unsigned)reg_ns, (unsigned)frame_us);
 }
 
 /* Every word must carry its own chip and channel, and the whole frame must
@@ -142,6 +186,7 @@ static void acq_smoke_test(void)
                (unsigned)argus_acq_rd(ARGUS_ACQ_STATUS),
                (unsigned)(f1 - f0));
 
+    acq_timing_report();
     acq_frame_check(0);
 }
 
