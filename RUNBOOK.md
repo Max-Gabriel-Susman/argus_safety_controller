@@ -5,18 +5,20 @@ full path — host relay → Zynq PS → PL → UDP telemetry → ROS graph — 
 `argus-workstation-iii`. It spans three repos and a ROS workspace, so it lives
 here, with the firmware, which is the thing being run.
 
-It takes four terminals and Vitis. That is not incidental: each terminal owns
-one process whose lifetime you need to see, and the order they start in
-matters because the firmware talks to two of them within milliseconds of the
-ELF loading.
+It is one command. `argus_bringup`'s launch file starts the relay, the
+receiver, the telemetry bridge and the decoder, streams the board console
+into the same output, and (with `program:=true`) programs the FPGA and runs
+the ELF through XSDB, in the order the firmware needs: the relay is
+listening before the ELF sends its first fetch request.
 
 ```
-┌────────────────────┬────────────────────┐
-│ A  dataset relay   │ B  serial console  │   host → board      board → you
-├────────────────────┼────────────────────┤
-│ C  UDP receiver    │ D  ros2 CLI        │   board → ROS       you → ROS
-└────────────────────┴────────────────────┘
-                 Vitis: build, program, run
+launch ─┬─ preflight            route, dataset, training set, serial port
+        ├─ console              /dev/ttyUSB1 → [console-2] lines
+        ├─ dataset_relay_node   host → board   (UDP 5010)
+        ├─ neural_udp_receiver  board → ROS    (UDP 5005)
+        ├─ telemetry bridge     → /argus/sensors/neural_telemetry
+        ├─ inference_node       → /cmd_vel
+        └─ program.sh           bitstream + ELF via XSDB   (program:=true)
 ```
 
 ## One-time setup
@@ -95,111 +97,85 @@ ls -l --time-style=long-iso \
 
 The `.bit` must be newer than the `.xsa`.
 
-## The run, in order
-
-### A — relay
+## The run
 
 ```bash
 rosenv
-ros2 run argus_sim dataset_relay_node --ros-args \
-  -p dataset_path:=$HOME/argus_data/indy_20161005_06_s120_10s.bin
+ros2 launch argus_bringup argus.launch.py program:=true
 ```
 
-Omit `dataset_path` to serve the synthetic identity pattern instead — the
-frame checks in the firmware expect it, and it is the right choice when you
-are debugging the transport rather than the data. Healthy:
+`Ctrl-C` ends it. `ros2 launch argus_bringup argus.launch.py --show-args`
+lists the rest: `dataset:=` and `mat:=` pick the replay segment and the
+training set, `relay:=`, `receiver:=`, `decode:=` and `console:=` switch
+parts off, and `program:=false` (the default) leaves a board that is already
+running alone. Nothing may hold `/dev/ttyUSB1` (a `screen`, see the table
+below) and no node from a previous run may be alive: `pgrep -af -- --ros-args`
+must print nothing. A leftover relay still owns UDP 5010 and answers some
+of the board's fetches.
 
-```
-[INFO] [dataset_relay]: dataset: /home/prometheus/argus_data/indy_20161005_06_s120_10s.bin
-[INFO] [dataset_relay]: replay server on 0.0.0.0:5010 -- 300093 samples x 96 channels, 7 samples/chunk, loop=true
-```
+To use a saved counts+power model instead of training on the `.mat`, export
+`ARGUS_MODEL_PATH=/path/to/model.pkl` (from `decode_test.py --save-model`)
+before the launch.
 
-**Before Vitis Run.** The firmware sends its first fetch request within
-milliseconds of starting; with no relay listening it times out, prints
-`replay FAILED`, and streaming never begins.
-
-### B — serial console
+**Build, run and judge in one step.** The hardware-in-the-loop cycle, with
+timeouts and a verdict:
 
 ```bash
-screen /dev/ttyUSB1 115200
+~/Documents/argus_ws/src/argus_bringup/scripts/hwtest.sh [--fabric] [--firmware] [--seconds N] [--no-decode]
 ```
 
-The Arty enumerates two FTDI ports; the console is the higher-numbered one.
-The screen goes blank and stays blank — that is attached and waiting.
+`--fabric` rebuilds the bitstream (refuses on a timing failure) and
+`--firmware` rebuilds the ELF. It then runs the launch above with
+`program:=true` for N seconds (default 60), keeps the log at
+`~/Documents/hwtest-<stamp>.log`, and prints `PASS` or `FAIL`, the last two
+`stream:` lines and the last `feat:` line. `--judge <log>` re-judges a past
+log. The board keeps running the previous firmware until it is reprogrammed,
+so the lines before the `acq id=` banner in a log belong to the old image.
 
-**Before Vitis Run.** The banner prints as the ELF starts. Attaching after
-means an empty screen with no way to tell healthy from hung.
-
-### C — receiver
-
-```bash
-rosenv
-ros2 run argus_sensors neural_udp_receiver
-```
-
-Prints `No frames received on :5005` every 5 s until the board is up. That
-is the correct idle state. It can start any time; nothing on the board waits
-for it.
-
-### Vitis — Run
-
-Component `safety_controller` → **Run**. The XSDB console should show
-`fpga -file ... argus_neural_codec.bit` at 100%, `ps7_init`, a processor
-reset, and `dow` of the ELF succeeding.
-
-### D — ros2 CLI
-
-```bash
-rosenv
-ros2 topic echo /argus/neural_interface_bridge/neural_data --once
-```
-
-Anything else you want to look at from the ROS side goes here too:
-`ros2 topic hz`, `ros2 topic echo /dataset_relay/status`.
-
-### E — decoder
-
-```bash
-rosenv
-ARGUS_DATASET_PATH=$HOME/argus_data/indy_20161005_06.mat \
-  ros2 run argus_inference inference_node --ros-args \
-  -p input_topic:=/argus/neural_interface_bridge/neural_data
-```
-
-Trains on the `.mat` at startup (~1 s), logs `offline 4-way intent accuracy:
-0.440`, then decodes every frame the fabric sends and publishes `/cmd_vel`.
-One log line per second, `sample` advancing by 20. In D, `ros2 topic hz
-/cmd_vel` at 20 Hz is the end of the pipeline.
+**Manual, for debugging one piece.** Every node still runs on its own:
+`ros2 run argus_sim dataset_relay_node --ros-args -p dataset_path:=...`,
+`ros2 run argus_sensors neural_udp_receiver`, `screen /dev/ttyUSB1 115200`,
+and Vitis → `safety_controller` → **Run**. Start the relay and the console
+before Run: the firmware fetches within milliseconds of starting, and the
+banner prints as the ELF starts.
 
 ## What healthy looks like
 
-**Console (B)**, in order. The first line is the one to read:
+**Console** (`[console-2]` in the launch output), in order. The first line is
+the one to read:
 
 ```
 Initializing Argus Safety Controller...
-acq id=41435133                       <- fabric revision matches firmware
+acq id=41435133                       <- fabric revision ACQ3 matches firmware
 acq status=00000001 frames/s=30012    <- sweep rate
-acq timing: reg 1080 ns/read, 96-word frame read 114 us, sweep 33 us (read is held)
-acq frame N: [0]=.... [95]=.... idx=.. expect=.. bad=0     <- identity pattern only
-acq features: bin 3  ch0 count 0 power 4  ch14 count 0 power 5  dropped 0
+acq timing: reg 213 ns/read, 96-word frame read 22 us, sweep 33 us (read is held)
+acq frame 31652: [0]=00A3 [95]=9FA3 idx=A3 expect=A3 bad=0   <- identity pattern
+acq features: bin 21  ch0 count 0 power 2012  ch14 count 0 power 2012  dropped 0
 Configuring PHY for fixed 1000 Mbps mode
 link speed for phy address 1: 1000
 replay clock: 10 ms measured over 10 ms sleep
-replay ok: [0][0]=0000 [0][5]=0500 [1][0]=0001 [146][95]=9F92
+replay: BRAM aperture cacheable; halves flushed before ack
+replay ok: [0][0]=8385 [0][5]=8194 [1][0]=839F [146][95]=8272
 replay: req=1 rtx=0 ok=21 rej=0 to=0 chunks=21/21
 stream: priming
 Argus Safety Controller initialized. IP 192.168.1.10
-tx 20 bin 13 skipped 0                <- one line per second, bin +20, skipped stays 0
+tx 20 bin 18 skipped 0                <- one line per second, bin +20, skipped stays 0
 ```
 
-Then every ~5 s a `stream:` line, a `feat:` line and an `acq frame` line:
+Then every ~5 s two `stream:` lines, a `feat:` line and an `acq frame` line:
 
 ```
-stream: halves=172 underruns=3561 failures=0 next=25284 pl: half=1 row=64 c0=1 c1=1
-feat: bin 493 dropped 0  ch14 count 0 power 4572  ch75 count 5 power 11024
-acq frame 739935: [0]=7FB9 [95]=7D2E idx=B9 (ext) bad=96
+stream: halves=398 underruns=828 failures=0 next=58506 pl: half=0 row=20 c0=1 c1=1
+stream: fetch avg=11902 max=200918 us (n=398)  flush avg=417 max=418 us  rtx=1 to=1 rej=0
+feat: bin 98 dropped 0  ch14 count 0 power 8075  ch75 count 0 power 7298
+acq frame 1197644: [0]=803A [95]=8171 idx=3A (ext) bad=96
 ```
 
+The first `stream:` line is the replay state: `next` is the dataset offset
+of the next fetch, `underruns` counts halves the fabric replayed stale. The
+second is its cost per half: `fetch` from request to last chunk, `flush`
+the cache write-back, and the relay client's retransmit, timeout and
+reject counters. Real time needs fetch + flush under 4.9 ms per half.
 `dropped` stays 0 and power sits in the thousands. The frame line's `bad=96`
 is the identity-pattern check running on real data — expected, not a fault.
 `tx` and `bin` differ by a few: `bin` restarts when streaming enters ext mode.
@@ -209,48 +185,52 @@ The first line is the one that matters. `acq id=41435132  EXPECTED 41435133
 the firmware then parks after `acq features: hold never took effect` and
 sends nothing. See the one-time Vitis section.
 
-**Receiver (C):**
+**Receiver** (`[neural_udp_receiver-4]`):
 
 ```
-frames ok=92 size=0 magic=0 ver=0 crc=0
+frames ok=176 size=0 magic=0 ver=0 crc=0
 ```
 
-About 92 per 5 s window, the four failure counters at 0.
+`ok` rises by 100 per 5 s window (20 Hz), the four failure counters at 0.
 
-**Echo (D):** `channel_count: 96` and 96 small integers — crossing counts per
-50 ms bin, mostly 0 with single digits on the live channels. `sample` is the
-bin number and `t` is `sample × 0.04998`.
+**Echo** (another shell, `rosenv` first):
+`ros2 topic echo /argus/neural_interface_bridge/neural_data --once` shows
+`channel_count: 96`, 96 small integers in `channels` (crossing counts per
+50 ms bin, mostly 0 with single digits on the live channels) and 96 values
+in the thousands in `power` (mean-square, code²). `sample` is the bin
+number and `t` is `sample × 0.04998`.
 
-**Decoder (E):** `offline 4-way intent accuracy: 0.440`, then one line per
+**Decoder** (`[inference_node-6]`): a line naming the model path, then
+`offline 4-way intent accuracy: 0.440` (`.mat` path), then one line per
 second with `sample` advancing by 20 and an `intent -> vx wz` pair.
 
-## Known state, as of 2026-09-27 (tag `acq3-live`)
+## Known state, as of 2026-09-28
 
 - **The pipeline is complete.** Replayed cortex → simulated chips → SPI →
   crossings and spike-band power in fabric → UDP → DDS → LDA → `/cmd_vel`
-  at 20.0 Hz. Telemetry is paced by the fabric's bin counter now, so the
-  rate is exact.
-- **`underruns` climbs, `halves` barely moves.** The PS refills BRAM halves
-  over AXI-Lite one word at a time, about 7 ms per half against the 4.9 ms
-  the fabric takes to play one. It keeps up with ~3% of them; the rest
-  replay stale, so the codec is computing on a stutter of the same 5 ms of
-  recording. Counts are structurally right and numerically meaningless; the
-  decoder's intents are noise. The fix is DMA from DDR to BRAM, and it is
-  now the only thing between this pipeline and real output.
-- **Power is computed but not sent.** `NeuralFrame` carries counts only;
-  the `feat:` line shows power. Putting it on the wire is the next firmware
-  and message change, and it is what takes the decoder from 44% to 53%.
+  at 20.0 Hz. Telemetry is paced by the fabric's bin counter, so the rate
+  is exact.
+- **Replay is short of real time.** With the BRAM aperture cacheable,
+  `flush` is 417 us per half and the bus is no longer the limit. Each half
+  now costs 10–15 ms of `fetch` (one request, 21 chunks, one fetch in
+  flight) against the 4.9 ms the fabric takes to play it, so replay runs
+  at 35–46% of 30 kS/s and `underruns` still climbs. `unable to alloc pbuf
+  in recv_handler` appearing mid-run marks the slower end of that range.
+- **Power is on the wire at frame version 3** (`power[96]`, mean-square =
+  sum / 1500). Host and firmware must both be v3; a v2 end shows up as a
+  climbing `ver=` on the receiver.
 
 ## Shutting down
 
-In this order, so nothing is left holding a port or a JTAG channel:
+`Ctrl-C` the launch once and let it finish; every node exits and the
+console releases `/dev/ttyUSB1`. Then check that nothing survived:
+`pgrep -af -- --ros-args` prints nothing. A node that outlived its launch
+keeps its port (a relay keeps 5010) and confuses the next run; `kill` it.
 
-1. **Vitis:** stop the debug session (Debug view → red square), or File →
-   Exit. Pulling the USB cable under a live session wedges XSDB.
-2. **Console:** `Ctrl-A` then `k`, then `y`. *Not* `Ctrl-A d`, and not
-   closing the window — a detached `screen` still owns `/dev/ttyUSB1` and the
-   next attach shows nothing.
-3. **A, C, D:** `Ctrl-C`.
+For a manual run: stop the Vitis debug session first (pulling the USB cable
+under a live session wedges XSDB), then `Ctrl-A k y` in `screen` (*not*
+`Ctrl-A d`: a detached `screen` still owns `/dev/ttyUSB1`), then `Ctrl-C`
+the nodes.
 
 ## When it does not work
 
@@ -258,9 +238,9 @@ In this order, so nothing is left holding a port or a JTAG channel:
 | --- | --- | --- |
 | `Package 'argus_sensors' not found` | not built in `~/Documents/argus_ws` | `colcon build`, see one-time setup |
 | `.../argus_ws/install/setup.bash: No such file` | `rosenv` points at an old workspace | fix the path in `~/.bash_aliases` |
-| `topic ... does not appear to be published yet` | receiver (C) not running | start it |
-| `replay FAILED ... to=6 chunks=0/21` | relay (A) not up before Run | start A, reset the board |
-| `replay FAILED` with A up | VPN tunnel has the subnet | `ip route get 192.168.1.10`; disconnect NordVPN |
+| `topic ... does not appear to be published yet` | receiver not running | `receiver:=true` (the default) |
+| `replay FAILED ... to=6 chunks=0/21` | relay not up before the ELF ran (manual run) | start the relay first, or use the launch |
+| `replay FAILED` with the relay up | VPN tunnel has the subnet | `ip route get 192.168.1.10`; disconnect NordVPN |
 | `acq id=41435131  EXPECTED 41435132 -- stale bitstream?` | fabric predates firmware | `build_bitstream.tcl`, re-read XSA, rebuild platform + app |
 | `acq frame: hold never took effect` | same, older firmware | same |
 | `Failed to download .../Documents/safety_controller/build/...elf` | Vitis launched without `-w` | relaunch `vitis -w ~/Documents/argus_safety_controller` |
@@ -271,21 +251,6 @@ In this order, so nothing is left holding a port or a JTAG channel:
 | `The message type 'argus_core/msg/NeuralFrame' is invalid` | shell has base ROS but not the workspace overlay | `rosenv` in that shell |
 | `Package 'argus_inference' not found` with the package built | same | `rosenv` |
 | `Destination Host Unreachable` from ping | no route on the USB NIC | one-time network setup again |
-| `tx ... skipped N` with N > 0 | hold failing on the fabric | should not happen on ACQ2; report it |
+| `tx ... skipped N` with N > 0 | hold failing on the fabric | should not happen on ACQ3; report it |
+| `pgrep -af -- --ros-args` lists nodes before a run | a previous launch left a node alive | `kill` it; a stale relay still owns UDP 5010 |
 | Receiver `ver=` climbing, `ok=0` | host `argus_wire.h` behind the board's | sync from `argus_core`, rebuild `argus_sensors` |
-
-## Optional: one command for the three ROS terminals
-
-If `tmux` is installed, this opens A, C and D in one window, sourced, with A
-and C already running:
-
-```bash
-tmux new-session -d -s argus \
-  "bash -ic 'rosenv && ros2 run argus_sim dataset_relay_node --ros-args -p dataset_path:=\$HOME/argus_data/indy_20161005_06_s120_10s.bin'" \; \
-  split-window -v "bash -ic 'rosenv && ros2 run argus_sensors neural_udp_receiver'" \; \
-  split-window -h "bash -ic 'rosenv; exec bash'" \; \
-  select-layout tiled \; attach
-```
-
-The console stays in its own terminal — `screen` inside `tmux` works but the
-`Ctrl-A` prefix collides with tmux's default and has to be remapped.
