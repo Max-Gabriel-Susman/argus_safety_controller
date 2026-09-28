@@ -59,7 +59,12 @@ void argus_replay_stream_begin(uint32_t first_sample);
 /* Drive from the main loop. Calls argus_replay_service() itself. */
 void argus_replay_stream_service(void);
 
-/* Streaming counters over UART: halves filled, underruns seen, retries. */
+/* Main-loop accounting for the stream report: call once per iteration
+ * with what xemacif_input() returned (packets delivered). */
+void argus_replay_note_loop(int packets);
+
+/* Streaming counters over UART: halves filled, underruns seen, retries,
+ * and where the per-packet time goes. */
 void argus_replay_stream_report(void);
 
 #endif /* ARGUS_REPLAY_H */

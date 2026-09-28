@@ -354,7 +354,7 @@ int main(void)
      * bin and the loop reads whenever it has. sample on the wire is the
      * bin number and t is the bin's time at the sweep rate. */
     while (1) {
-        xemacif_input(&server_netif);   /* required even TX-only: ARP */
+        argus_replay_note_loop(xemacif_input(&server_netif));   /* ARP too */
         sys_check_timeouts();
         argus_replay_stream_service();
 

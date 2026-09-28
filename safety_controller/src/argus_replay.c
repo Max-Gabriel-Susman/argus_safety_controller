@@ -51,6 +51,14 @@ static argus_replay_client_t g_client;
  * read past the end of the first link and reject every full-size chunk. */
 static uint8_t g_rx[sizeof(argus_replay_chunk_hdr_t) + ARGUS_REPLAY_MAX_PAYLOAD];
 
+/* Per-report-interval receive timing: the pbuf flatten and the client's
+ * parse (validation, CRC, copy into the half) of each replay packet, and
+ * the main loop's iterations and packets delivered. Reset by the stream
+ * report. */
+static uint32_t g_copy_us_sum, g_copy_us_max;
+static uint32_t g_parse_us_sum, g_parse_us_max, g_rx_n;
+static uint32_t g_loop_iters, g_loop_pkts;
+
 /* --- time ---------------------------------------------------------------- */
 
 /* The Cortex-A9 global timer, not sys_now(). Independent of lwIP's timer
@@ -123,8 +131,23 @@ static void replay_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     }
 
     if (p->tot_len <= sizeof(g_rx)) {
+        uint32_t t0 = argus_now_us();
+        uint32_t t1, t2;
+
         pbuf_copy_partial(p, g_rx, p->tot_len, 0);
+        t1 = argus_now_us();
         argus_replay_client_on_packet(&g_client, g_rx, (uint16_t)p->tot_len);
+        t2 = argus_now_us();
+
+        g_copy_us_sum += t1 - t0;
+        if (t1 - t0 > g_copy_us_max) {
+            g_copy_us_max = t1 - t0;
+        }
+        g_parse_us_sum += t2 - t1;
+        if (t2 - t1 > g_parse_us_max) {
+            g_parse_us_max = t2 - t1;
+        }
+        g_rx_n++;
     }
 
     pbuf_free(p);
@@ -391,6 +414,12 @@ void argus_replay_stream_service(void)
     }
 }
 
+void argus_replay_note_loop(int packets)
+{
+    g_loop_iters++;
+    g_loop_pkts += (uint32_t)packets;
+}
+
 void argus_replay_stream_report(void)
 {
     uint32_t rs = argus_acq_rd(ARGUS_ACQ_REPLAY_STATUS);
@@ -419,6 +448,21 @@ void argus_replay_stream_report(void)
                (unsigned)g_client.timeouts,
                (unsigned)g_client.chunks_rejected);
 
+    /* Per replay packet: copy is pbuf_copy_partial, parse is the client
+     * (checks, CRC-16 over header and payload, copy into the half). The
+     * loop figures say how many main-loop passes it took to deliver them. */
+    xil_printf("stream: rx n=%u copy avg=%u max=%u us  parse avg=%u max=%u us"
+               "  loop iters=%u pkts=%u\r\n",
+               (unsigned)g_rx_n,
+               (unsigned)(g_rx_n ? g_copy_us_sum / g_rx_n : 0u),
+               (unsigned)g_copy_us_max,
+               (unsigned)(g_rx_n ? g_parse_us_sum / g_rx_n : 0u),
+               (unsigned)g_parse_us_max,
+               (unsigned)g_loop_iters, (unsigned)g_loop_pkts);
+
     g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
     g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;
+    g_copy_us_sum = 0; g_copy_us_max = 0;
+    g_parse_us_sum = 0; g_parse_us_max = 0; g_rx_n = 0;
+    g_loop_iters = 0; g_loop_pkts = 0;
 }
