@@ -257,6 +257,14 @@ static uint32_t g_fetch_t0_us;
 static uint32_t g_fetch_us_sum, g_fetch_us_max, g_fetch_n;
 static uint32_t g_flush_us_sum, g_flush_us_max, g_flush_n;
 
+/* Idle gap in STREAM_RUN: from one fetch completing to the next request
+ * leaving. Includes waiting for the PL to consume a half and anything the
+ * main loop does in between (console, telemetry). g_done_valid is 0 until
+ * the first completion in RUN, so priming is not counted. */
+static uint32_t g_done_us;
+static int      g_done_valid;
+static uint32_t g_gap_us_sum, g_gap_us_max, g_gap_n;
+
 static int stream_fetch_into(int half)
 {
     if (argus_replay_start_fetch(g_next_sample, ARGUS_BRAM_HALF(half)) != 0) {
@@ -265,6 +273,16 @@ static int stream_fetch_into(int half)
     }
     g_in_flight   = half;
     g_fetch_t0_us = argus_now_us();
+    if (g_stream == STREAM_RUN && g_done_valid) {
+        uint32_t gap = g_fetch_t0_us - g_done_us;
+
+        g_gap_us_sum += gap;
+        g_gap_n++;
+        if (gap > g_gap_us_max) {
+            g_gap_us_max = gap;
+        }
+        g_done_valid = 0;
+    }
     return 0;
 }
 
@@ -317,6 +335,8 @@ void argus_replay_stream_begin(uint32_t first_sample)
 
     g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
     g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;
+    g_gap_us_sum = 0; g_gap_us_max = 0; g_gap_n = 0;
+    g_done_valid = 0;
 
     if (stream_fetch_into(0) == 0) {
         g_stream = STREAM_PRIME0;
@@ -404,7 +424,9 @@ void argus_replay_stream_service(void)
                 /* Same half, same offset, next time round. */
                 g_fetch_failures++;
             }
-            g_in_flight = -1;
+            g_in_flight  = -1;
+            g_done_us    = argus_now_us();
+            g_done_valid = 1;
         }
         break;
 
@@ -450,19 +472,23 @@ void argus_replay_stream_report(void)
 
     /* Per replay packet: copy is pbuf_copy_partial, parse is the client
      * (checks, CRC-16 over header and payload, copy into the half). The
-     * loop figures say how many main-loop passes it took to deliver them. */
+     * loop figures say how many main-loop passes it took to deliver them.
+     * gap is fetch done to next request sent, in STREAM_RUN. */
     xil_printf("stream: rx n=%u copy avg=%u max=%u us  parse avg=%u max=%u us"
-               "  loop iters=%u pkts=%u\r\n",
+               "  loop iters=%u pkts=%u  gap avg=%u max=%u us (n=%u)\r\n",
                (unsigned)g_rx_n,
                (unsigned)(g_rx_n ? g_copy_us_sum / g_rx_n : 0u),
                (unsigned)g_copy_us_max,
                (unsigned)(g_rx_n ? g_parse_us_sum / g_rx_n : 0u),
                (unsigned)g_parse_us_max,
-               (unsigned)g_loop_iters, (unsigned)g_loop_pkts);
+               (unsigned)g_loop_iters, (unsigned)g_loop_pkts,
+               (unsigned)(g_gap_n ? g_gap_us_sum / g_gap_n : 0u),
+               (unsigned)g_gap_us_max, (unsigned)g_gap_n);
 
     g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
     g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;
     g_copy_us_sum = 0; g_copy_us_max = 0;
     g_parse_us_sum = 0; g_parse_us_max = 0; g_rx_n = 0;
     g_loop_iters = 0; g_loop_pkts = 0;
+    g_gap_us_sum = 0; g_gap_us_max = 0; g_gap_n = 0;
 }
