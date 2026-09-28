@@ -9,7 +9,7 @@
     /* Wire contract betweeen the Zynq safety controller and argus_sensors.
      * Both ends must agree. Bump ARGUS_FRAME_VERSION on any layout change. */
     #define ARGUS_FRAME_MAGIC 0x41524753u /* 'A''R''G''S' */
-    #define ARGUS_FRAME_VERSION 2
+    #define ARGUS_FRAME_VERSION 3
     #define ARGUS_MAX_CHANNELS 96
     #define ARGUS_UDP_PORT 5005
 
@@ -20,11 +20,12 @@
         uint8_t  version;
         uint8_t  reserved;
         uint16_t channel_count;
-        uint16_t channels[ARGUS_MAX_CHANNELS];
+        uint16_t channels[ARGUS_MAX_CHANNELS]; /* crossings per bin */
+        uint32_t power[ARGUS_MAX_CHANNELS];    /* v3: mean-square, code^2 */
         uint16_t crc;                    /* CRC-16/CCITT bytes [0,crc) */
     } argus_frame_packet_t;
     
-    static_assert(sizeof(argus_frame_packet_t) == 210, "frame size drift");
+    static_assert(sizeof(argus_frame_packet_t) == 594, "frame size drift");
 
     
     // cyclic redundancy check
