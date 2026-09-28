@@ -12,13 +12,8 @@
 #include "argus_acq.h"
 #include "argus_replay.h"
 
-/* Telemetry cadence. One held frame per period; see the main loop. */
-#define PUBLISH_PERIOD_MS 50
-
-/* Sweep rate of the fabric: 125 MHz / (35 slots x 119 clocks) = 30012.0 Hz.
- * FRAME_INDEX at this rate is the frame's timestamp in seconds since the
- * chain was last reset. acq_smoke_test() measures frames/s against it. */
-#define ARGUS_ACQ_SWEEP_HZ 30012.0f
+/* Bins between status lines: 100 x 50 ms = 5 s. */
+#define STATUS_EVERY_BINS 100
 
 /* Bounded wait for the first replay request to leave. lwIP queues packets
  * for an unresolved destination when ARP_QUEUEING is on, so this normally
@@ -26,9 +21,6 @@
  * stack between attempts is what lets ARP complete either way. */
 #define REPLAY_SEND_ATTEMPTS 200
 #define REPLAY_SEND_GAP_US   10000
-
-/* Telemetry frames between status lines. */
-#define STATUS_EVERY_FRAMES  100
 
 /* A9 global timer, 333.333 MHz. Matches ARGUS_TIMER_HZ in xtopology.c;
  * the 0.1% truncation is irrelevant at microsecond resolution. */
@@ -82,6 +74,40 @@ static int acq_read_frame(uint16_t *out, uint32_t *frame_index)
 
     for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
         out[n] = (uint16_t)argus_acq_rd(ARGUS_ACQ_FRAME_BASE + 4u * (uint32_t)n);
+    }
+
+    argus_acq_wr(ARGUS_ACQ_CTRL, ctrl);
+    return 0;
+}
+
+/* One bin of features under a hold, the same shape as acq_read_frame():
+ * set CTRL.feat_hold, poll STATUS.feat_held, read FEATURE_INDEX and the
+ * 192 words, release. Counts come out as they are; the 48-bit sum of
+ * squares is divided by the bin length so power is the mean square in
+ * code^2 and fits 32 bits. 192 reads at ~1 us each is 0.2 ms against a
+ * 50 ms bin, and a bin that completes under the hold is deferred rather
+ * than lost, so this never costs data. */
+static int acq_read_features(uint16_t *counts, uint32_t *power, uint32_t *bin_index)
+{
+    uint32_t ctrl  = argus_acq_rd(ARGUS_ACQ_CTRL);
+    uint32_t spins = 0;
+
+    argus_acq_wr(ARGUS_ACQ_CTRL, ctrl | ARGUS_ACQ_CTRL_FEAT_HOLD);
+
+    while ((argus_acq_rd(ARGUS_ACQ_STATUS) & ARGUS_ACQ_STATUS_FEAT_HELD) == 0u) {
+        if (++spins > ACQ_HOLD_SPIN_MAX) {
+            argus_acq_wr(ARGUS_ACQ_CTRL, ctrl);
+            return -2;
+        }
+    }
+
+    *bin_index = argus_acq_rd(ARGUS_ACQ_FEATURE_INDEX);
+
+    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
+        uint32_t lo = argus_acq_rd(ARGUS_ACQ_FEATURE_LO(n));
+        uint32_t hi = argus_acq_rd(ARGUS_ACQ_FEATURE_HI(n));
+        counts[n] = ARGUS_ACQ_FEAT_COUNT(hi);
+        power[n]  = (uint32_t)(ARGUS_ACQ_FEAT_SUM(hi, lo) / ARGUS_ACQ_BIN_LEN);
     }
 
     argus_acq_wr(ARGUS_ACQ_CTRL, ctrl);
@@ -207,6 +233,29 @@ static void acq_smoke_test(void)
 
     acq_timing_report();
     acq_frame_check(0);
+
+    /* The feature bank: one bin is 50 ms, so wait for the first swap and
+     * read it. Counts are zero until the 1.09 s warm-up has passed; power
+     * is live from bin 0. */
+    {
+        uint16_t counts[ARGUS_MAX_CHANNELS];
+        uint32_t power[ARGUS_MAX_CHANNELS];
+        uint32_t bin;
+
+        for (int i = 0; i < 100 && argus_acq_rd(ARGUS_ACQ_FEATURE_INDEX) == 0u; i++) {
+            usleep(1000);
+        }
+
+        if (acq_read_features(counts, power, &bin) != 0) {
+            xil_printf("acq features: hold never took effect\r\n");
+        } else {
+            xil_printf("acq features: bin %u  ch0 count %u power %u  ch14 count %u power %u"
+                       "  dropped %u\r\n",
+                       (unsigned)bin, counts[0], (unsigned)power[0],
+                       counts[14], (unsigned)power[14],
+                       (unsigned)argus_acq_rd(ARGUS_ACQ_FEAT_DROPPED));
+        }
+    }
 }
 
 /* --- main ----------------------------------------------------------------- */
@@ -214,10 +263,10 @@ static void acq_smoke_test(void)
 int main(void)
 {
     ip_addr_t ipaddr, netmask, gw;
-    uint16_t channels[ARGUS_MAX_CHANNELS];
-    uint32_t fi;
-    uint32_t last_tx_ms;
-    uint32_t now_ms;
+    uint16_t counts[ARGUS_MAX_CHANNELS];
+    uint32_t power[ARGUS_MAX_CHANNELS];
+    uint32_t bin;
+    uint32_t last_bin   = 0;
     uint32_t tx_count   = 0;
     uint32_t tx_skipped = 0;
     int attempt;
@@ -289,48 +338,46 @@ int main(void)
 
     xil_printf("Argus Safety Controller initialized. IP 192.168.1.10\r\n");
 
-    /* Telemetry is a snapshot, not a stream: one held frame every
-     * PUBLISH_PERIOD_MS, out of the ~1500 the fabric produces in that
-     * window. It proves the whole path -- relay, BRAM, chips, master,
-     * assembler, hold, UDP, receiver -- carries what the chips saw. What
-     * the PL should reduce those 1500 frames to is the codec's job and is
-     * deliberately not decided here.
+    /* Telemetry is now the codec's output: one NeuralFrame per 50 ms bin,
+     * carrying each channel's threshold-crossing count -- the format
+     * inference_node was trained on, so the decoder consumes it as is.
+     * Spike-band power is read alongside and shown on the status line;
+     * it goes on the wire when NeuralFrame gains a power field.
      *
-     * sample on the wire is FRAME_INDEX: the fabric's own sweep count,
-     * which under ext_mode is also the offset into what the relay served,
-     * because stream_enter_ext_mode() resets the chain at row 0 of half 0.
-     * t is that count in seconds at the sweep rate. Neither is disturbed
-     * by a hold: FRAME_INDEX names the frame in the bank, not a count of
-     * frames published. */
-    last_tx_ms = sys_now();
-
+     * Paced by the fabric, not the clock: FEATURE_INDEX advances once per
+     * bin and the loop reads whenever it has. sample on the wire is the
+     * bin number and t is the bin's time at the sweep rate. */
     while (1) {
         xemacif_input(&server_netif);   /* required even TX-only: ARP */
         sys_check_timeouts();
         argus_replay_stream_service();
 
-        now_ms = sys_now();
-        if ((uint32_t)(now_ms - last_tx_ms) < PUBLISH_PERIOD_MS) {
+        if (argus_acq_rd(ARGUS_ACQ_FEATURE_INDEX) == last_bin) {
             continue;
         }
-        last_tx_ms = now_ms;
 
         /* A hold that never took effect is a fabric problem, not a reason
-         * to publish a torn frame. Skip, count, and let the tx line show it. */
-        if (acq_read_frame(channels, &fi) != 0) {
+         * to publish a torn bin. Skip, count, and let the status line show it. */
+        if (acq_read_features(counts, power, &bin) != 0) {
             tx_skipped++;
+            last_bin = argus_acq_rd(ARGUS_ACQ_FEATURE_INDEX);
             continue;
         }
+        last_bin = bin;
 
-        argus_send_frame(fi, (float)fi / ARGUS_ACQ_SWEEP_HZ, channels);
+        argus_send_frame(bin, (float)bin * ((float)ARGUS_ACQ_BIN_LEN / ARGUS_ACQ_SWEEP_HZ),
+                         counts);
         tx_count++;
 
         if ((tx_count % 20) == 0) {
-            xil_printf("tx %u frame %u skipped %u\r\n",
-                       (unsigned)tx_count, (unsigned)fi, (unsigned)tx_skipped);
+            xil_printf("tx %u bin %u skipped %u\r\n",
+                       (unsigned)tx_count, (unsigned)bin, (unsigned)tx_skipped);
         }
-        if ((tx_count % STATUS_EVERY_FRAMES) == 0) {
+        if ((tx_count % STATUS_EVERY_BINS) == 0) {
             argus_replay_stream_report();
+            xil_printf("feat: bin %u dropped %u  ch14 count %u power %u  ch75 count %u power %u\r\n",
+                       (unsigned)bin, (unsigned)argus_acq_rd(ARGUS_ACQ_FEAT_DROPPED),
+                       counts[14], (unsigned)power[14], counts[75], (unsigned)power[75]);
             acq_frame_check(argus_acq_rd(ARGUS_ACQ_CTRL) & ARGUS_ACQ_CTRL_EXT_MODE);
         }
     }

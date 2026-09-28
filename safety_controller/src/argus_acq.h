@@ -27,13 +27,24 @@
 #define ARGUS_ACQ_ID              (ARGUS_ACQ_BASE + 0x00Cu)
 #define ARGUS_ACQ_REPLAY_STATUS   (ARGUS_ACQ_BASE + 0x010u)
 #define ARGUS_ACQ_REPLAY_ACK      (ARGUS_ACQ_BASE + 0x014u)
+#define ARGUS_ACQ_FEATURE_INDEX   (ARGUS_ACQ_BASE + 0x018u)
+#define ARGUS_ACQ_FEAT_DROPPED    (ARGUS_ACQ_BASE + 0x01Cu)
 #define ARGUS_ACQ_FRAME_BASE      (ARGUS_ACQ_BASE + 0x100u)
+#define ARGUS_ACQ_FEATURE_BASE    (ARGUS_ACQ_BASE + 0x400u)
 
 /* Fabric revision. Bumped with id_value in argus_acq_axi.vhd on any change
  * this header depends on; acq_smoke_test() checks it before anything else.
- * ACQ2 is the first build with CTRL.hold / STATUS.held. */
-#define ARGUS_ACQ_ID_EXPECT       0x41435132u   /* "ACQ2" */
+ * ACQ2 was the first build with CTRL.hold / STATUS.held; ACQ3 adds the
+ * feature bank. */
+#define ARGUS_ACQ_ID_EXPECT       0x41435133u   /* "ACQ3" */
 #define ARGUS_ACQ_CH_PER_CHIP     32
+
+/* The fabric's sweep rate, 125 MHz / (35 slots x 119 clocks), and the bin
+ * length argus_feature accumulates over. FRAME_INDEX / SWEEP_HZ is a frame's
+ * time in seconds since the chain was reset; FEATURE_INDEX * BIN_LEN /
+ * SWEEP_HZ is a bin's. Both match the generics in argus_feature.vhd. */
+#define ARGUS_ACQ_SWEEP_HZ        30012.0f
+#define ARGUS_ACQ_BIN_LEN         1500u
 
 /* CTRL */
 #define ARGUS_ACQ_CTRL_ENABLE     (1u << 0)
@@ -43,6 +54,9 @@
  * what it completes, so hold for as long as a coherent read needs and no
  * longer. FRAME_INDEX freezes with it and names the frame being read. */
 #define ARGUS_ACQ_CTRL_HOLD       (1u << 3)
+/* Same for the feature bank. A bin that completes under hold is deferred,
+ * not lost, unless the hold outlasts a whole bin (FEAT_DROPPED counts). */
+#define ARGUS_ACQ_CTRL_FEAT_HOLD  (1u << 4)
 
 /* STATUS */
 #define ARGUS_ACQ_STATUS_READY    (1u << 0)
@@ -50,6 +64,16 @@
 /* The freeze is in effect and the bank has settled. Poll this after
  * setting CTRL.hold; do not assume the write took immediately. */
 #define ARGUS_ACQ_STATUS_HELD     (1u << 2)
+#define ARGUS_ACQ_STATUS_FEAT_HELD (1u << 3)
+
+/* FEATURE[n] is two words at FEATURE_BASE + 8n: the low 32 bits of the
+ * bin's sum of squared high-passed samples, then the crossing count in the
+ * high half-word over the sum's top 16 bits. Sum / BIN_LEN is the mean
+ * square in ADC code^2 -- Willett's spikePow up to a constant. */
+#define ARGUS_ACQ_FEATURE_LO(n)   (ARGUS_ACQ_FEATURE_BASE + 8u * (uint32_t)(n))
+#define ARGUS_ACQ_FEATURE_HI(n)   (ARGUS_ACQ_FEATURE_BASE + 8u * (uint32_t)(n) + 4u)
+#define ARGUS_ACQ_FEAT_COUNT(hi)  ((uint16_t)((hi) >> 16))
+#define ARGUS_ACQ_FEAT_SUM(hi, lo) ((((uint64_t)(hi) & 0xFFFFu) << 32) | (uint64_t)(lo))
 
 /* REPLAY_STATUS */
 #define ARGUS_ACQ_RS_PLAY_HALF    (1u << 0)
