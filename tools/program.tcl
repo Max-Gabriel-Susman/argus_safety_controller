@@ -30,7 +30,22 @@ puts "program: elf  [clock format [file mtime $elf] -format %H:%M:%S]  $elf"
 
 connect
 
-targets -set -nocase -filter {name =~ "APU*"}
+# connect launches hw_server if none is running, and returns before the
+# cable has enumerated: with Vitis closed, the first targets query finds
+# nothing. Wait for the APU, up to 20 s.
+set found 0
+for {set i 0} {$i < 40} {incr i} {
+  if {![catch {targets -set -nocase -filter {name =~ "APU*"}}]} {
+    set found 1
+    break
+  }
+  after 500
+}
+if {!$found} {
+  error "program.tcl: no JTAG targets after 20 s -- is the board powered and its USB connected?\n[targets]"
+}
+puts "program: targets\n[targets]"
+
 rst -system
 after 3000
 
