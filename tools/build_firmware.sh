@@ -23,6 +23,14 @@ if [ -f "$VITIS/settings64.sh" ]; then
   set +u; . "$VITIS/settings64.sh"; set -u
 fi
 
+# The installed API reference, if present, names the method's real
+# parameters; print them so a wrong guess costs one run, not several.
+DOC="$VITIS/cli/api_docs/build/html/vitis.html"
+if [ -f "$DOC" ]; then
+  echo "build_firmware: API docs say:"
+  grep -o 'update_hw([^)]*)' "$DOC" | sort -u | head -3 | sed 's/^/build_firmware:   /' || true
+fi
+
 t0=$(date +%s)
 "$VITIS/bin/vitis" -s "$REPO/tools/build_firmware.py"
 
