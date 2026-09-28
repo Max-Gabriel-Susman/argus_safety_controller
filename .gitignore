@@ -61,3 +61,4 @@ vivado*.log
 vivado_pid*.str
 vivado*.backup.jou
 vivado*.backup.log
+.Xil/
