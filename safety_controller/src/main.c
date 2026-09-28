@@ -372,7 +372,7 @@ int main(void)
         last_bin = bin;
 
         argus_send_frame(bin, (float)bin * ((float)ARGUS_ACQ_BIN_LEN / ARGUS_ACQ_SWEEP_HZ),
-                         counts);
+                         counts, power);
         tx_count++;
 
         if ((tx_count % 20) == 0) {

@@ -23,7 +23,8 @@ int argus_net_init(void)
     return 0;
 }
 
-int argus_send_frame(uint32_t sample, float t, const uint16_t *ch)
+int argus_send_frame(uint32_t sample, float t, const uint16_t *ch,
+                     const uint32_t *power)
 {
     argus_frame_packet_t pkt = {0};
     pkt.magic = ARGUS_FRAME_MAGIC;
@@ -32,6 +33,7 @@ int argus_send_frame(uint32_t sample, float t, const uint16_t *ch)
     pkt.version = ARGUS_FRAME_VERSION;
     pkt.channel_count = ARGUS_MAX_CHANNELS;
     memcpy(pkt.channels, ch, sizeof(pkt.channels));
+    memcpy(pkt.power, power, sizeof(pkt.power)); /* v3: sum / BIN_LEN */
     pkt.crc = crc16_ccitt((const uint8_t *)&pkt, offsetof(argus_frame_packet_t, crc));
     
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, sizeof(pkt), PBUF_RAM);

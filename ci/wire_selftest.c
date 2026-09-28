@@ -51,7 +51,7 @@ int main(void)
     check_size("sizeof(uint16_t)", sizeof(uint16_t), 2);
 
     /* telemetry frame */
-    check_size("sizeof(argus_frame_packet_t)", sizeof(argus_frame_packet_t), 210);
+    check_size("sizeof(argus_frame_packet_t)", sizeof(argus_frame_packet_t), 594);
     check_size("frame.magic", offsetof(argus_frame_packet_t, magic), 0);
     check_size("frame.sample", offsetof(argus_frame_packet_t, sample), 4);
     check_size("frame.t", offsetof(argus_frame_packet_t, t), 8);
@@ -59,7 +59,8 @@ int main(void)
     check_size("frame.reserved", offsetof(argus_frame_packet_t, reserved), 13);
     check_size("frame.channel_count", offsetof(argus_frame_packet_t, channel_count), 14);
     check_size("frame.channels", offsetof(argus_frame_packet_t, channels), 16);
-    check_size("frame.crc", offsetof(argus_frame_packet_t, crc), 208);
+    check_size("frame.power", offsetof(argus_frame_packet_t, power), 208);
+    check_size("frame.crc", offsetof(argus_frame_packet_t, crc), 592);
 
     /* replay request */
     check_size("sizeof(argus_replay_request_t)", sizeof(argus_replay_request_t), 22);

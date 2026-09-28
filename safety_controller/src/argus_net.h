@@ -5,6 +5,7 @@
     #include <stdint.h>
     int argus_net_init(void);
 
-    int argus_send_frame(uint32_t sample, float t, const uint16_t *ch);
+    int argus_send_frame(uint32_t sample, float t, const uint16_t *ch,
+                         const uint32_t *power);
 
 #endif 
