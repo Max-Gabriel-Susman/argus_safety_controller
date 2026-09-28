@@ -6,6 +6,8 @@
 #include "lwip/udp.h"
 #include "lwip/pbuf.h"
 #include "xil_printf.h"
+#include "xil_cache.h"
+#include "xil_mmu.h"
 #include "sleep.h"
 
 /* The SDT-flow BSP exports the timer API from xiltimer rather than the
@@ -29,6 +31,16 @@
 #define ARGUS_REPLAY_TIMEOUT_MS 200u
 #define ARGUS_REPLAY_MAX_RETRIES 5u
 
+/* The BRAM aperture is Device memory in the BSP's translation table: no
+ * write merging, so the client's memcpy of a half is 7056 halfword stores
+ * and 7056 single-beat AXI writes. Marked Normal write-back instead, the
+ * copy lands in the D-cache and one flush per half writes it out as
+ * 32-byte bursts. The PL reads port B directly and never sees the cache,
+ * so the flush must complete before the half is acked -- see
+ * stream_half_ready(). Requires the D-cache on (main.c). 0 keeps the
+ * Device mapping, for comparison. */
+#define ARGUS_BRAM_CACHED 1
+
 static struct udp_pcb *g_pcb;
 static ip_addr_t g_relay;
 static argus_replay_client_t g_client;
@@ -49,6 +61,13 @@ static uint32_t argus_now_ms(void)
     XTime t;
     XTime_GetTime(&t);
     return (uint32_t)(t / (COUNTS_PER_SECOND / 1000U));
+}
+
+static uint32_t argus_now_us(void)
+{
+    XTime t;
+    XTime_GetTime(&t);
+    return (uint32_t)(t / (COUNTS_PER_SECOND / 1000000U));
 }
 
 /* If this clock does not advance, poll() never times out and a lost chunk
@@ -130,6 +149,15 @@ int argus_replay_init(void)
 
     argus_check_clock();
 
+#if ARGUS_BRAM_CACHED
+    /* One 1 MB section; only the 64 KB aperture lives in it. The acq
+     * registers at 0x43C00000 are a different section and stay Device. */
+    Xil_SetTlbAttributes(ARGUS_BRAM_BASE, NORM_WB_CACHE);
+    xil_printf("replay: BRAM aperture cacheable; halves flushed before ack\r\n");
+#else
+    xil_printf("replay: BRAM aperture uncached (Device); halves written beat by beat\r\n");
+#endif
+
     return argus_replay_client_init(&g_client, replay_send, NULL,
                                     ARGUS_MAX_CHANNELS,
                                     ARGUS_REPLAY_TIMEOUT_MS,
@@ -175,13 +203,16 @@ void argus_replay_report(void)
 /* The PL plays one half while the PS refills the other. The PL reports a
  * half consumed when it flips out of it; the PS fetches the next block of
  * samples straight into that half -- the client's memcpy lands in BRAM
- * over AXI -- and acks. If the PL flips back into a half before its ack,
- * it sets underrun and keeps playing stale data; counted here, not fatal.
+ * over AXI, or in the cache with a flush behind it -- and acks. If the PL
+ * flips back into a half before its ack, it sets underrun and keeps playing
+ * stale data; counted here, not fatal.
  *
  * At most one fetch is in flight. The request cadence is one half every
- * 147 sweeps (4.9 ms at 30 kS/s), and the measured delivery time for a
- * half is around 4.3 ms, so this is not generous. Underruns here are the
- * signal to widen the link, not a bug in this file. */
+ * 147 sweeps (4.9 ms at 30 kS/s). The stream report says where the time
+ * goes: fetch is request to last chunk, flush is the cache write-back,
+ * and the client's rtx/to counters say whether chunks are being lost on
+ * the way in -- a fetch that times out costs 200 ms, which no amount of
+ * bus speed recovers. */
 
 typedef enum {
     STREAM_OFF,
@@ -198,14 +229,49 @@ static uint32_t g_halves_filled;
 static uint32_t g_underruns;
 static uint32_t g_fetch_failures;
 
+/* Per-report-interval timing. */
+static uint32_t g_fetch_t0_us;
+static uint32_t g_fetch_us_sum, g_fetch_us_max, g_fetch_n;
+static uint32_t g_flush_us_sum, g_flush_us_max, g_flush_n;
+
 static int stream_fetch_into(int half)
 {
     if (argus_replay_start_fetch(g_next_sample, ARGUS_BRAM_HALF(half)) != 0) {
         g_fetch_failures++;
         return -1;
     }
-    g_in_flight = half;
+    g_in_flight   = half;
+    g_fetch_t0_us = argus_now_us();
     return 0;
+}
+
+/* The half's samples are all in: make them visible to the PL and record
+ * how long the fetch took. Called before the half is acked or played. */
+static void stream_half_ready(int half)
+{
+    uint32_t dt = argus_now_us() - g_fetch_t0_us;
+
+    g_fetch_us_sum += dt;
+    g_fetch_n++;
+    if (dt > g_fetch_us_max) {
+        g_fetch_us_max = dt;
+    }
+
+#if ARGUS_BRAM_CACHED
+    {
+        uint32_t t0 = argus_now_us();
+        Xil_DCacheFlushRange((INTPTR)ARGUS_BRAM_HALF(half), ARGUS_BRAM_HALF_BYTES);
+        dt = argus_now_us() - t0;
+
+        g_flush_us_sum += dt;
+        g_flush_n++;
+        if (dt > g_flush_us_max) {
+            g_flush_us_max = dt;
+        }
+    }
+#else
+    (void)half;
+#endif
 }
 
 static void stream_enter_ext_mode(void)
@@ -225,6 +291,9 @@ void argus_replay_stream_begin(uint32_t first_sample)
     g_halves_filled  = 0;
     g_underruns      = 0;
     g_fetch_failures = 0;
+
+    g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
+    g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;
 
     if (stream_fetch_into(0) == 0) {
         g_stream = STREAM_PRIME0;
@@ -252,6 +321,7 @@ void argus_replay_stream_service(void)
             stream_fetch_into(0);
         } else if (argus_replay_is_done()) {
             if (argus_replay_succeeded()) {
+                stream_half_ready(0);
                 g_halves_filled++;
                 g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
                 g_in_flight = -1;
@@ -270,6 +340,7 @@ void argus_replay_stream_service(void)
             stream_fetch_into(1);
         } else if (argus_replay_is_done()) {
             if (argus_replay_succeeded()) {
+                stream_half_ready(1);
                 g_halves_filled++;
                 g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
                 g_in_flight = -1;
@@ -300,6 +371,7 @@ void argus_replay_stream_service(void)
             }
         } else if (argus_replay_is_done()) {
             if (argus_replay_succeeded()) {
+                stream_half_ready(g_in_flight);
                 g_halves_filled++;
                 g_next_sample += ARGUS_REPLAY_SAMPLES_PER_HALF;
                 argus_acq_wr(ARGUS_ACQ_REPLAY_ACK,
@@ -333,4 +405,20 @@ void argus_replay_stream_report(void)
                (unsigned)ARGUS_ACQ_RS_ROW(rs),
                (unsigned)((rs >> 1) & 1u),
                (unsigned)((rs >> 2) & 1u));
+
+    /* Where the time goes, over the interval since the last report. A
+     * fetch near 200000 us is a retransmit timeout: chunks are being lost
+     * on receive, and that is the problem to chase, not the bus. */
+    xil_printf("stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us"
+               "  rtx=%u to=%u rej=%u\r\n",
+               (unsigned)(g_fetch_n ? g_fetch_us_sum / g_fetch_n : 0u),
+               (unsigned)g_fetch_us_max, (unsigned)g_fetch_n,
+               (unsigned)(g_flush_n ? g_flush_us_sum / g_flush_n : 0u),
+               (unsigned)g_flush_us_max,
+               (unsigned)g_client.retransmits_sent,
+               (unsigned)g_client.timeouts,
+               (unsigned)g_client.chunks_rejected);
+
+    g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
+    g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;
 }

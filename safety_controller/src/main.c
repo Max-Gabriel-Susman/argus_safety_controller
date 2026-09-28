@@ -271,7 +271,13 @@ int main(void)
     uint32_t tx_skipped = 0;
     int attempt;
 
-    Xil_DCacheDisable();   /* simplest correct choice for bring-up */
+    /* Caches on. The D-cache was off through bring-up. With it on, the
+     * replay BRAM aperture can be mapped write-back so a half's 28 KB lands
+     * in cache and one flush writes it to the fabric in 32-byte bursts
+     * (argus_replay.c); the rest of the firmware runs several times faster
+     * as well. lwIP's Xilinx port maintains the cache over the GEM's DMA
+     * buffers itself. The acq registers are Device memory and unaffected. */
+    Xil_DCacheEnable();
 
     xil_printf("Initializing Argus Safety Controller...\r\n");
 
