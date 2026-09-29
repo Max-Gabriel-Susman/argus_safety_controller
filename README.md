@@ -1,10 +1,16 @@
 # Argus Safety Controller
 
-The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety once we're receiving inbound commands for stimulus from the host side. The short-term plan is to:
+The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety once we're receiving inbound commands for stimulus from the host side. The whole stack, and the one command that runs it on the board, is described in
+[argus_bringup/README.md](https://github.com/Max-Gabriel-Susman/argus_bringup/blob/main/README.md);
+day-to-day operation is in [RUNBOOK.md](RUNBOOK.md). Build this repo with
+`tools/build_firmware.sh` (about two minutes). To build, program and judge in
+one step, use `argus_bringup/scripts/hwtest.sh --firmware`.
 
-- [ ] 1. Migrate the neural decoding logic from the argus neural interface firmware project to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL.
+The short-term plan is to:
 
-- [ ] 2. Port the FreeRTOS implementation over to baremetal.
+- [x] 1. Migrate the neural decoding logic from the argus neural interface firmware project to the gateware in the argus-neural-codec repo and provide safe gateware access to the Argus Cybernetics Stack's ROS graph. This will target the Arty Z7'sPL. Done at fabric revision ACQ3: crossings and spike-band power come from the PL and go out at wire frame version 3.
+
+- [x] 2. Port the FreeRTOS implementation over to baremetal.
 
 - [ ] 3. Modify the implementation to be closed loop.
 
@@ -44,8 +50,8 @@ In a properly setup(TODO: document this process) workspace re-vendor with:
 ```
 cp ~/Documents/argus_ws/src/argus_core/include/argus_core/argus_wire.h ~/Documents/argus_safety_controller/safety_controller/src/
 ```
-Then restore the provenance comment at the top of the copy. Any change to
-this header must land in `argus_core` first, and `argus_sensors` on the Orin
+The copy must stay byte-identical to the canonical file; CI diffs them. Any
+change to this header must land in `argus_core` first, and `argus_sensors` on the Orin
 must be updated in the same change — all three parse the same frames.
 
 ## Hand-maintained BSP headers
@@ -78,7 +84,13 @@ The BSP exports its timer API from `xiltimer` (`xiltimer.h`,
 
 ## Running on hardware
 
-A full run involves three things on the workstation — the dataset relay, a
+The usual way to run is one command:
+`ros2 launch argus_bringup argus.launch.py program:=true` (or
+`argus_bringup/scripts/hwtest.sh`, which adds builds, a timeout and a
+verdict). It does everything below in the right order. The manual steps
+remain for debugging.
+
+A full manual run involves three things on the workstation — the dataset relay, a
 serial console, and Vitis — plus the board. They need to be brought up in a
 particular order, because the firmware starts talking to both the relay and
 the UART within milliseconds of the ELF loading.
@@ -353,37 +365,51 @@ launch.json edit did not save (`Ctrl-S` in the form editor).
 
 ### 4. What you should see
 
+The values depend on the dataset. The `replay ok` and `(ext)` lines below
+are for the relay's synthetic pattern.
+
 ```
 Initializing Argus Safety Controller...
-acq id=41435131
+acq id=41435133
 acq status=00000001 frames/s=30012
+acq timing: reg 212 ns/read, 96-word frame read 22 us, sweep 33 us (read is held)
 acq frame 30040: [0]=0087 [95]=9f87 idx=87 expect=87 bad=0
+acq features: bin 21  ch0 count 0 power 2012  ch14 count 0 power 2012  dropped 0
 Using default Speed from design
 Configuring PHY for fixed 1000 Mbps mode
 link speed for phy address 1: 1000
+replay clock: 10 ms measured over 10 ms sleep
+replay: BRAM aperture cacheable; halves flushed before ack
 replay ok: [0][0]=0000 [0][5]=0500 [1][0]=0001 [146][95]=9F92
 replay: req=1 rtx=0 ok=21 rej=0 to=0 chunks=21/21
 stream: priming
 Argus Safety Controller initialized. IP 192.168.1.10
-tx 0
-stream: halves=2 underruns=0 failures=0 next=294 pl: half=0 row=41 c0=0 c1=0
-acq frame 31219: [0]=0029 [95]=9f29 idx=29 (ext) bad=0
-tx 20
-tx 40
+tx 20 bin 18 skipped 0
+tx 40 bin 38 skipped 0
+...
+stream: halves=1001 underruns=0 failures=0 next=147147 pl: half=0 row=4 c0=0 c1=1
+stream: fetch avg=2356 max=8207 us (n=1001)  flush avg=417 max=418 us  rtx=0 to=0 rej=0
+stream: rx n=21042 copy avg=2 max=21 us  parse avg=77 max=165 us  loop iters=1752531 pkts=21022  gap avg=2128 max=2232 us (n=999)  con drop=0 max=89
+feat: bin 98 dropped 0  ch14 count 1 power 14140  ch75 count 1 power 9892
+acq frame 147006: [0]=0029 [95]=9f29 idx=29 (ext) bad=0
 ```
 
 Line by line:
 
-- **`acq id=41435131`** — "ACQ1". The register block is at the expected
+- **`acq id=41435133`** — "ACQ3". Anything else prints `EXPECTED ...
+  -- stale bitstream?`. The register block is at the expected
   address. `deadbeef` means the address map disagrees with `argus_acq.h`.
 - **`acq status=00000001 frames/s=30012`** — bit 0 is `ready` (init sequence
   complete), bit 1 would be assembler overrun. The frame rate is exactly
   125e6 / (119 × 35); a few counts either way is `usleep` jitter.
-- **`acq frame N: ... bad=0`** — one 96-word frame read under a seqlock. Every
+- **`acq frame N: ... bad=0`** — one 96-word frame read under the hardware
+  hold (`CTRL.hold` / `STATUS.held`). Every
   word must carry its own chip and channel; `bad` counts those that don't.
   Before streaming, `idx` is the chips' sweep counter and must equal
   `expect` (the assembler's frame counter, modulo 256). After streaming it
-  is the dataset sample number and is labelled `(ext)`.
+  is the dataset sample number and is labelled `(ext)`. The `bad` check
+  only means something with the relay's synthetic pattern. With a real
+  `.bin` (the launch default), `(ext)` lines show `bad=96`, which is expected.
 - **`replay ok: ... [146][95]=9F92`** — one-shot fetch into DDR: chip 2,
   channel 31, sample 146. Proves the host→PS path before the PL depends on
   it. There is a one-second pause before this while ARP resolves.
@@ -392,20 +418,24 @@ Line by line:
 - **`stream: halves=N underruns=U failures=F next=S pl: half=H row=R c0=.. c1=..`**
   — every 100 telemetry frames. `halves` counts BRAM halves filled; `next`
   is the dataset offset of the next fetch; `pl:` is the fetcher's current
-  half and row and whether either half is waiting for a refill.
+  half and row and whether either half is waiting for a refill. The
+  second and third `stream:` lines time the fetch, the cache flush and the
+  receive path. `feat:` is the latest feature bin for two channels.
 
 **`underruns` is the number to watch over a long run.** Zero and holding
-means the relay is keeping up. Climbing steadily means the link cannot
-sustain 5.76 MB/s with margin — the measured delivery rate is about 6.5 MB/s,
-so headroom is thin. The fix for that is jumbo frames on the link, not
-firmware.
+means replay keeps up. As of 2026-09-28 it does: about 203 of the 204
+halves/s the fabric plays, fetch about 2.4 ms per 4.9 ms half, and 0
+underruns over 90 s runs. The limit was the PS, not the link. The fixes
+were a cacheable BRAM aperture flushed before the ack, a table-driven
+CRC, `SYS_LIGHTWEIGHT_PROT` and `LWIP_ALLOW_MEM_FREE_FROM_OTHER_CONTEXT`
+in lwIP, and a non-blocking console. `RUNBOOK.md` has the details.
 
 ### Working order, condensed
 
 1. Relay running (terminal 1)
 2. `screen /dev/ttyUSB1 115200` (terminal 2)
 3. Vitis → Run, with Program Device ticked
-4. Watch the banner, then the `(ext) bad=0` line
+4. Watch the banner, then the `(ext)` line (`bad=0` with the synthetic pattern)
 5. `Ctrl-A` `k` `y` when done, before the next Run
 
 ### Troubleshooting
@@ -419,7 +449,7 @@ firmware.
 | `replay fetch request never left the board` | `udp_sendto` failed. Interface not up, or `argus_replay_init` failed silently. |
 | `replay FAILED` with `to=` nonzero, `ok=0` | Requests leaving, no replies. Relay not running, firewall, or wrong host address. |
 | `replay FAILED` with `rej=` nonzero | Replies arriving but rejected. `chunk_total` or `channel_count` mismatch between relay and firmware. |
-| `acq frame: torn 4 times` | 96-word AXI read consistently slower than one sweep. Would be surprising. |
+| `acq frame: hold never took effect` | `STATUS.held` never set after `CTRL.hold`: bitstream older than ACQ2, or the fabric is wedged. `hwtest.sh` fails on it. |
 | `WARNING: replay clock advanced 0 ms` | `xiltimer` clock not running. Retransmits will never fire; fetches hang on any loss. |
 | *Device or resource busy* on `screen` | Detached session holding the port. `screen -ls`, then kill it. |
 | `Packet filtered` on ping | Host adapter has no address; traffic going out the default route. |
