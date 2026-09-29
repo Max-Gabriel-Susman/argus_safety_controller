@@ -3,6 +3,7 @@
 
 #define NO_SYS                  1
 #define SYS_LIGHTWEIGHT_PROT    1
+#define LWIP_ALLOW_MEM_FREE_FROM_OTHER_CONTEXT 1
 #define LWIP_SOCKET             0
 #define LWIP_NETCONN            0
 #define LWIP_DHCP               0
