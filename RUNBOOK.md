@@ -162,20 +162,29 @@ Argus Safety Controller initialized. IP 192.168.1.10
 tx 20 bin 18 skipped 0                <- one line per second, bin +20, skipped stays 0
 ```
 
-Then every ~5 s two `stream:` lines, a `feat:` line and an `acq frame` line:
+Then every ~5 s three `stream:` lines, a `feat:` line and an `acq frame` line:
 
 ```
-stream: halves=398 underruns=828 failures=0 next=58506 pl: half=0 row=20 c0=1 c1=1
-stream: fetch avg=11902 max=200918 us (n=398)  flush avg=417 max=418 us  rtx=1 to=1 rej=0
-feat: bin 98 dropped 0  ch14 count 0 power 8075  ch75 count 0 power 7298
-acq frame 1197644: [0]=803A [95]=8171 idx=3A (ext) bad=96
+stream: halves=1001 underruns=0 failures=0 next=147147 pl: half=0 row=4 c0=0 c1=1
+stream: fetch avg=2329 max=8204 us (n=1001)  flush avg=417 max=418 us  rtx=0 to=0 rej=0
+stream: rx n=21042 copy avg=2 max=21 us  parse avg=77 max=208 us  loop iters=1753738 pkts=21022  gap avg=2155 max=2268 us (n=999)  con drop=0 max=89
+feat: bin 98 dropped 0  ch14 count 1 power 14140  ch75 count 1 power 9892
+acq frame 147006: [0]=7fb1 [95]=7f7f idx=b1 (ext) bad=96
 ```
 
 The first `stream:` line is the replay state: `next` is the dataset offset
-of the next fetch, `underruns` counts halves the fabric replayed stale. The
+of the next fetch, `underruns` counts halves the fabric replayed stale. It
+should stay 0: `halves` rises by about 1020 per interval, which is real time. The
 second is its cost per half: `fetch` from request to last chunk, `flush`
 the cache write-back, and the relay client's retransmit, timeout and
-reject counters. Real time needs fetch + flush under 4.9 ms per half.
+reject counters. Real time needs fetch + flush under 4.9 ms per half. The
+first interval's fetch max of about 8 ms is priming. The third line is the
+receive path per packet. `gap` is the idle wait from one fetch finishing
+to the next request, about 2.1 ms of slack. `con drop` counts console
+messages dropped because the console ring was full (since boot), and `max` is the
+longest message in the interval. These lines are queued and drained into
+the UART without blocking (`argus_console.c`), so they no longer stall the
+loop.
 `dropped` stays 0 and power sits in the thousands. The frame line's `bad=96`
 is the identity-pattern check running on real data — expected, not a fault.
 `tx` and `bin` differ by a few: `bin` restarts when streaming enters ext mode.
@@ -210,12 +219,29 @@ second with `sample` advancing by 20 and an `intent -> vx wz` pair.
   crossings and spike-band power in fabric → UDP → DDS → LDA → `/cmd_vel`
   at 20.0 Hz. Telemetry is paced by the fabric's bin counter, so the rate
   is exact.
-- **Replay is short of real time.** With the BRAM aperture cacheable,
-  `flush` is 417 us per half and the bus is no longer the limit. Each half
-  now costs 10–15 ms of `fetch` (one request, 21 chunks, one fetch in
-  flight) against the 4.9 ms the fabric takes to play it, so replay runs
-  at 35–46% of 30 kS/s and `underruns` still climbs. `unable to alloc pbuf
-  in recv_handler` appearing mid-run marks the slower end of that range.
+- **Replay runs at real time.** About 203 halves/s against the 204 the
+  fabric plays: fetch 2.3–2.4 ms per half (the table-driven CRC-16 in
+  `argus_wire.h`), flush 417 us, rtx/to/rej 0, no pbuf allocation failures.
+  Two lwIP fixes got it there. `SYS_LIGHTWEIGHT_PROT 1` stops the pbuf
+  pool corrupting under the Ethernet interrupts, which used to wedge
+  the stream. `LWIP_ALLOW_MEM_FREE_FROM_OTHER_CONTEXT 1` makes the
+  heap safe from the TX-done interrupt's `mem_free`, the likely cause of an
+  occasional bad telemetry CRC. The last underruns came from the 5 s
+  status block: about 470 characters through blocking `xil_printf` at
+  115200 baud stalled the loop for 35 ms. Console output in the main loop
+  now goes through a 4096-byte ring drained into the UART FIFO without
+  blocking. `underruns` has stayed 0 over a whole 90 s run; one run showed
+  a single underrun.
+- **The codec is bit-exact on silicon.** `argus_sim/tools/hw_bitexact.py`
+  matched every count and power in 1450 bins of a 90 s run (seven loops of
+  the replay file) against `spike_features.py`.
+- **Caveats.** The CRC fix has two clean 90 s runs behind it (about 2900
+  frames). The old fault rate was about one bad frame in 2900, so that
+  lowers the odds without proving it is gone. Console lines are
+  not printed at the moment they are queued; a line that does not fit in the ring is
+  dropped whole and counted in `con drop`. Messages before the main loop
+  (banner, smoke test, replay check) still block, which does not matter
+  there.
 - **Power is on the wire at frame version 3** (`power[96]`, mean-square =
   sum / 1500). Host and firmware must both be v3; a v2 end shows up as a
   climbing `ver=` on the receiver.
