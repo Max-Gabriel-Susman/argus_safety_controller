@@ -33,6 +33,7 @@ set(USER_INCLUDE_DIRECTORIES
 set(USER_COMPILE_SOURCES
 "argus_replay.c"
 "argus_net.c"
+"argus_console.c"
 "../src/main.c"
 "lwip/port/xtopology.c"
 "lwip/port/sys_arch_raw.c"

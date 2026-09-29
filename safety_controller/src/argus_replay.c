@@ -20,6 +20,7 @@
 #include "argus_replay_client.h"
 #include "argus_acq.h"
 #include "argus_replay.h"
+#include "argus_console.h"
 
 /* Relay host. Same machine as the telemetry destination in argus_net.c;
  * if that address moves, both must move together. */
@@ -446,44 +447,47 @@ void argus_replay_stream_report(void)
 {
     uint32_t rs = argus_acq_rd(ARGUS_ACQ_REPLAY_STATUS);
 
-    xil_printf("stream: halves=%u underruns=%u failures=%u next=%u"
-               " pl: half=%u row=%u c0=%u c1=%u\r\n",
-               (unsigned)g_halves_filled,
-               (unsigned)g_underruns,
-               (unsigned)g_fetch_failures,
-               (unsigned)g_next_sample,
-               (unsigned)(rs & ARGUS_ACQ_RS_PLAY_HALF),
-               (unsigned)ARGUS_ACQ_RS_ROW(rs),
-               (unsigned)((rs >> 1) & 1u),
-               (unsigned)((rs >> 2) & 1u));
+    argus_console_printf("stream: halves=%u underruns=%u failures=%u next=%u"
+                         " pl: half=%u row=%u c0=%u c1=%u\r\n",
+                         (unsigned)g_halves_filled,
+                         (unsigned)g_underruns,
+                         (unsigned)g_fetch_failures,
+                         (unsigned)g_next_sample,
+                         (unsigned)(rs & ARGUS_ACQ_RS_PLAY_HALF),
+                         (unsigned)ARGUS_ACQ_RS_ROW(rs),
+                         (unsigned)((rs >> 1) & 1u),
+                         (unsigned)((rs >> 2) & 1u));
 
     /* Where the time goes, over the interval since the last report. A
      * fetch near 200000 us is a retransmit timeout: chunks are being lost
      * on receive, and that is the problem to chase, not the bus. */
-    xil_printf("stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us"
-               "  rtx=%u to=%u rej=%u\r\n",
-               (unsigned)(g_fetch_n ? g_fetch_us_sum / g_fetch_n : 0u),
-               (unsigned)g_fetch_us_max, (unsigned)g_fetch_n,
-               (unsigned)(g_flush_n ? g_flush_us_sum / g_flush_n : 0u),
-               (unsigned)g_flush_us_max,
-               (unsigned)g_client.retransmits_sent,
-               (unsigned)g_client.timeouts,
-               (unsigned)g_client.chunks_rejected);
+    argus_console_printf("stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us"
+                         "  rtx=%u to=%u rej=%u\r\n",
+                         (unsigned)(g_fetch_n ? g_fetch_us_sum / g_fetch_n : 0u),
+                         (unsigned)g_fetch_us_max, (unsigned)g_fetch_n,
+                         (unsigned)(g_flush_n ? g_flush_us_sum / g_flush_n : 0u),
+                         (unsigned)g_flush_us_max,
+                         (unsigned)g_client.retransmits_sent,
+                         (unsigned)g_client.timeouts,
+                         (unsigned)g_client.chunks_rejected);
 
     /* Per replay packet: copy is pbuf_copy_partial, parse is the client
      * (checks, CRC-16 over header and payload, copy into the half). The
      * loop figures say how many main-loop passes it took to deliver them.
      * gap is fetch done to next request sent, in STREAM_RUN. */
-    xil_printf("stream: rx n=%u copy avg=%u max=%u us  parse avg=%u max=%u us"
-               "  loop iters=%u pkts=%u  gap avg=%u max=%u us (n=%u)\r\n",
-               (unsigned)g_rx_n,
-               (unsigned)(g_rx_n ? g_copy_us_sum / g_rx_n : 0u),
-               (unsigned)g_copy_us_max,
-               (unsigned)(g_rx_n ? g_parse_us_sum / g_rx_n : 0u),
-               (unsigned)g_parse_us_max,
-               (unsigned)g_loop_iters, (unsigned)g_loop_pkts,
-               (unsigned)(g_gap_n ? g_gap_us_sum / g_gap_n : 0u),
-               (unsigned)g_gap_us_max, (unsigned)g_gap_n);
+    argus_console_printf("stream: rx n=%u copy avg=%u max=%u us  parse avg=%u max=%u us"
+                         "  loop iters=%u pkts=%u  gap avg=%u max=%u us (n=%u)"
+                         "  con drop=%u max=%u\r\n",
+                         (unsigned)g_rx_n,
+                         (unsigned)(g_rx_n ? g_copy_us_sum / g_rx_n : 0u),
+                         (unsigned)g_copy_us_max,
+                         (unsigned)(g_rx_n ? g_parse_us_sum / g_rx_n : 0u),
+                         (unsigned)g_parse_us_max,
+                         (unsigned)g_loop_iters, (unsigned)g_loop_pkts,
+                         (unsigned)(g_gap_n ? g_gap_us_sum / g_gap_n : 0u),
+                         (unsigned)g_gap_us_max, (unsigned)g_gap_n,
+                         (unsigned)argus_console_drops(),
+                         (unsigned)argus_console_take_max_msg());
 
     g_fetch_us_sum = 0; g_fetch_us_max = 0; g_fetch_n = 0;
     g_flush_us_sum = 0; g_flush_us_max = 0; g_flush_n = 0;

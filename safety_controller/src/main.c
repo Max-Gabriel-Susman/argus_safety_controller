@@ -11,6 +11,7 @@
 #include "argus_wire.h"
 #include "argus_acq.h"
 #include "argus_replay.h"
+#include "argus_console.h"
 
 /* Bins between status lines: 100 x 50 ms = 5 s. */
 #define STATUS_EVERY_BINS 100
@@ -168,7 +169,7 @@ static void acq_frame_check(int ext)
     uint32_t fi;
 
     if (acq_read_frame(frame, &fi) != 0) {
-        xil_printf("acq frame: hold never took effect\r\n");
+        argus_console_printf("acq frame: hold never took effect\r\n");
         return;
     }
 
@@ -184,15 +185,15 @@ static void acq_frame_check(int ext)
     }
 
     if (ext) {
-        xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x (ext) bad=%d\r\n",
-                   (unsigned)fi, frame[0],
-                   ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
-                   idx, bad);
+        argus_console_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x (ext) bad=%d\r\n",
+                             (unsigned)fi, frame[0],
+                             ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
+                             idx, bad);
     } else {
-        xil_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
-                   (unsigned)fi, frame[0],
-                   ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
-                   idx, (unsigned)((fi - 1u) & 0xFFu), bad);
+        argus_console_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
+                             (unsigned)fi, frame[0],
+                             ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
+                             idx, (unsigned)((fi - 1u) & 0xFFu), bad);
     }
 }
 
@@ -233,6 +234,7 @@ static void acq_smoke_test(void)
 
     acq_timing_report();
     acq_frame_check(0);
+    argus_console_flush();
 
     /* The feature bank: one bin is 50 ms, so wait for the first swap and
      * read it. Counts are zero until the 1.09 s warm-up has passed; power
@@ -354,6 +356,7 @@ int main(void)
      * bin and the loop reads whenever it has. sample on the wire is the
      * bin number and t is the bin's time at the sweep rate. */
     while (1) {
+        argus_console_service();
         argus_replay_note_loop(xemacif_input(&server_netif));   /* ARP too */
         sys_check_timeouts();
         argus_replay_stream_service();
@@ -376,14 +379,14 @@ int main(void)
         tx_count++;
 
         if ((tx_count % 20) == 0) {
-            xil_printf("tx %u bin %u skipped %u\r\n",
-                       (unsigned)tx_count, (unsigned)bin, (unsigned)tx_skipped);
+            argus_console_printf("tx %u bin %u skipped %u\r\n",
+                                 (unsigned)tx_count, (unsigned)bin, (unsigned)tx_skipped);
         }
         if ((tx_count % STATUS_EVERY_BINS) == 0) {
             argus_replay_stream_report();
-            xil_printf("feat: bin %u dropped %u  ch14 count %u power %u  ch75 count %u power %u\r\n",
-                       (unsigned)bin, (unsigned)argus_acq_rd(ARGUS_ACQ_FEAT_DROPPED),
-                       counts[14], (unsigned)power[14], counts[75], (unsigned)power[75]);
+            argus_console_printf("feat: bin %u dropped %u  ch14 count %u power %u  ch75 count %u power %u\r\n",
+                                 (unsigned)bin, (unsigned)argus_acq_rd(ARGUS_ACQ_FEAT_DROPPED),
+                                 counts[14], (unsigned)power[14], counts[75], (unsigned)power[75]);
             acq_frame_check(argus_acq_rd(ARGUS_ACQ_CTRL) & ARGUS_ACQ_CTRL_EXT_MODE);
         }
     }
