@@ -235,9 +235,11 @@ second with `sample` advancing by 20 and an `intent -> vx wz` pair.
 - **The codec is bit-exact on silicon.** `argus_sim/tools/hw_bitexact.py`
   matched every count and power in 1450 bins of a 90 s run (seven loops of
   the replay file) against `spike_features.py`.
-- **Caveats.** The CRC fix has two clean 90 s runs behind it (about 2900
-  frames). The old fault rate was about one bad frame in 2900, so that
-  lowers the odds without proving it is gone. Console lines are
+- **Caveats.** The CRC fix has five clean 90 s runs behind it (7260
+  frames, `crc=0` and size/magic/ver 0 in every one). At the old rate of
+  about one bad frame in 2900, 7260 frames would show two or three. The
+  chance of seeing none is about 8 %, so this is good evidence but not
+  proof. Console lines are
   not printed at the moment they are queued; a line that does not fit in the ring is
   dropped whole and counted in `con drop`. Messages before the main loop
   (banner, smoke test, replay check) still block, which does not matter
