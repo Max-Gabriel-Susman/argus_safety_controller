@@ -2,7 +2,7 @@
 
 The **Argus Safety Controller** targets Cortex A9 MCU on the Arty Z7. This firmware application is intended to let the embedded device publish telemetry into the Argus ROS 2 graph. Eventually efforts will be put towards safety once we're receiving inbound commands for stimulus from the host side. The whole stack, and the one command that runs it on the board, is described in
 [argus_bringup/README.md](https://github.com/Max-Gabriel-Susman/argus_bringup/blob/main/README.md);
-day-to-day operation is in [RUNBOOK.md](RUNBOOK.md). Build this repo with
+day-to-day operation is in [RUNBOOK.md](https://github.com/Max-Gabriel-Susman/argus_safety_controller/blob/main/RUNBOOK.md). Build this repo with
 `tools/build_firmware.sh` (about two minutes). To build, program and judge in
 one step, use `argus_bringup/scripts/hwtest.sh --firmware`.
 
@@ -456,11 +456,36 @@ in lwIP, and a non-blocking console. `RUNBOOK.md` has the details.
 
 ## Documentation
 
-needs impl.
+Two kinds: prose for running the system (this README and RUNBOOK.md), and
+an API reference generated from the comments in `safety_controller/src/`
+with Doxygen.
 
 ### Doxygen
 
-needs impl.
+Install once, then build from the repo root:
+
+```bash
+sudo apt install doxygen graphviz
+doxygen
+xdg-open build/html/index.html
+```
+
+`Doxyfile` holds only the settings that differ from Doxygen's defaults,
+each with its reason. Output goes to `build/`, which is gitignored. A clean
+run prints nothing; anything printed is a warning about the comments.
+
+A comment becomes documentation when it opens with `/**` above the thing
+it documents, or `/**<` after it on the same line. Its first sentence
+becomes the summary, and nothing in a file is documented until the file
+has an `@file` block. `argus_console.h` and `argus_console.c` are written
+this way and are the pattern for the rest. Every file, function and macro
+appears in the output whether documented or not; `tools/doc_todo.sh`
+lists what still lacks a doc comment.
+
+The vendored lwIP tree is left out. `argus_wire.h` and
+`argus_replay_client.h` are included, but they are copies from
+`argus_core` that must stay byte-identical, so their comments are written
+there and arrive with the next re-vendor.
 
 ## Glossary
 
