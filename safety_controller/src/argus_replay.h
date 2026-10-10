@@ -1,24 +1,23 @@
-/* argus_replay.h
- *
- * PS-side replay: pulls dataset samples from the host relay over UDP and
- * keeps the PL's ping-pong BRAM fed.
+/**
+ * @file argus_replay.h
+ * @brief PS-side replay: pulls dataset samples from the host relay over UDP
+ *        and keeps the PL's ping-pong BRAM fed.
  *
  * Wraps argus_replay_client.h in lwIP raw callbacks. The client owns the
  * protocol; this file owns transport, the destination, and the streaming
  * state machine that decides which half to fill next.
  *
- * Two ways to use it:
+ * Two ways to use it, both after one call to argus_replay_init():
  *
- *   ONE-SHOT   argus_replay_start_fetch() into a caller-supplied buffer,
- *              then argus_replay_service() until argus_replay_is_done().
- *              Bring-up and the loopback comparison.
- *
- *   STREAMING  argus_replay_stream_begin() primes both BRAM halves, switches
- *              the chain to external mode, then argus_replay_stream_service()
- *              refills whichever half the PL reports consumed. Runs forever
- *              from the main loop.
+ * - **One-shot:** argus_replay_start_fetch() into a caller-supplied
+ *   buffer, then argus_replay_service() until argus_replay_is_done().
+ *   main.c does this once at boot to prove the host-to-PS path before
+ *   the PL depends on it.
+ * - **Streaming:** argus_replay_stream_begin() primes both BRAM halves,
+ *   switches the chain to external mode, then argus_replay_stream_service()
+ *   refills whichever half the PL reports consumed. Runs forever from the
+ *   main loop.
  */
-
 #ifndef ARGUS_REPLAY_H
 #define ARGUS_REPLAY_H
 

@@ -1,4 +1,7 @@
-/* argus_console.c -- see argus_console.h */
+/**
+ * @file argus_console.c
+ * @brief Ring buffer behind argus_console.h, which documents the API.
+ */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -14,11 +17,11 @@
 #error "ARGUS_CONSOLE_RING_BYTES must be a power of two"
 #endif
 
-static char     g_ring[ARGUS_CONSOLE_RING_BYTES];
-static uint32_t g_head;     /* next byte written; free-running */
-static uint32_t g_tail;     /* next byte sent;    free-running */
-static uint32_t g_drops;
-static uint32_t g_max_msg;
+static char     g_ring[ARGUS_CONSOLE_RING_BYTES]; /**< bytes queued for the UART */
+static uint32_t g_head;     /**< next byte written; free-running */
+static uint32_t g_tail;     /**< next byte sent;    free-running */
+static uint32_t g_drops;    /**< messages dropped since boot */
+static uint32_t g_max_msg;  /**< longest message since the last take */
 
 void argus_console_printf(const char *fmt, ...)
 {
