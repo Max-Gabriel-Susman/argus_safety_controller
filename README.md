@@ -456,13 +456,17 @@ in lwIP, and a non-blocking console. `RUNBOOK.md` has the details.
 
 ## Documentation
 
-Two kinds: prose for running the system (this README and RUNBOOK.md), and
-an API reference generated from the comments in `safety_controller/src/`
-with Doxygen.
-
-### Doxygen
-
-Install once, then build from the repo root:
+Two documents are prose: this README, for building and running, and
+`RUNBOOK.md`, for the board's known state and the procedures around it.
+The rest is generated. Doxygen reads `safety_controller/src/` and produces
+a map of the firmware, which for bare-metal C is the part worth having:
+every function page carries a call graph and a caller graph, so the path
+from the main loop down to a register write, or from a UDP receive
+callback up to what it feeds, is a click away; every file page has its
+include graph; the three packed wire structs are laid out field by field
+under Data Structures; and the Globals index lists every function, macro
+and variable, static ones included, which is most of `main.c`. This README
+is the front page.
 
 ```bash
 sudo apt install doxygen graphviz
@@ -470,22 +474,23 @@ doxygen
 xdg-open build/html/index.html
 ```
 
-`Doxyfile` holds only the settings that differ from Doxygen's defaults,
-each with its reason. Output goes to `build/`, which is gitignored. A clean
-run prints nothing; anything printed is a warning about the comments.
+`Doxyfile` is short on purpose: only the settings that differ from the
+defaults, each with its reason beside it. Output lands in `build/`, which
+is gitignored. The vendored lwIP tree is not read. `argus_wire.h` and
+`argus_replay_client.h` are read, but they are byte-identical copies of
+`argus_core`'s headers, so their comments are written there and arrive
+with the next re-vendor; `__attribute__` is predefined away so the packed
+structs in them parse.
 
-A comment becomes documentation when it opens with `/**` above the thing
-it documents, or `/**<` after it on the same line. Its first sentence
-becomes the summary, and nothing in a file is documented until the file
-has an `@file` block. `argus_console.h` and `argus_console.c` are written
-this way and are the pattern for the rest. Every file, function and macro
-appears in the output whether documented or not; `tools/doc_todo.sh`
-lists what still lacks a doc comment.
-
-The vendored lwIP tree is left out. `argus_wire.h` and
-`argus_replay_client.h` are included, but they are copies from
-`argus_core` that must stay byte-identical, so their comments are written
-there and arrive with the next re-vendor.
+A comment counts when it opens with `/**` above the thing it documents or
+`/**<` after it on the same line; its first sentence becomes the summary,
+and a file contributes nothing until it has an `@file` block.
+`argus_console.h` and `argus_console.c` are written this way and are the
+pattern. The map is complete today whether or not a function is
+described, and `tools/doc_todo.sh` lists what still has no comment.
+Doxygen checks that a documented function names all of its parameters,
+and the `docs` job in CI runs the same build with warnings as errors, so
+the reference stays clean as the comments fill in.
 
 ## Glossary
 
