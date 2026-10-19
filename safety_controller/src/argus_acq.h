@@ -29,17 +29,19 @@
 #define ARGUS_ACQ_REPLAY_ACK      (ARGUS_ACQ_BASE + 0x014u)
 #define ARGUS_ACQ_FEATURE_INDEX   (ARGUS_ACQ_BASE + 0x018u)
 #define ARGUS_ACQ_FEAT_DROPPED    (ARGUS_ACQ_BASE + 0x01Cu)
+#define ARGUS_ACQ_LANE_SRC        (ARGUS_ACQ_BASE + 0x020u)
+#define ARGUS_ACQ_MISO_DELAY      (ARGUS_ACQ_BASE + 0x024u)
 #define ARGUS_ACQ_FRAME_BASE      (ARGUS_ACQ_BASE + 0x100u)
 #define ARGUS_ACQ_FEATURE_BASE    (ARGUS_ACQ_BASE + 0x400u)
 
 /* Fabric revision. Bumped with id_value in argus_acq_axi.vhd on any change
  * this header depends on; acq_smoke_test() checks it before anything else.
  * ACQ2 was the first build with CTRL.hold / STATUS.held; ACQ3 adds the
- * feature bank. */
-#define ARGUS_ACQ_ID_EXPECT       0x41435133u   /* "ACQ3" */
+ * feature bank; ACQ4 adds LANE_SRC and MISO_DELAY. */
+#define ARGUS_ACQ_ID_EXPECT       0x41435134u   /* "ACQ4" */
 #define ARGUS_ACQ_CH_PER_CHIP     32
 
-/* The fabric's sweep rate, 125 MHz / (35 slots x 119 clocks), and the bin
+/* The fabric's sweep rate, 125 MHz / 4165 clocks per sweep, and the bin
  * length argus_feature accumulates over. FRAME_INDEX / SWEEP_HZ is a frame's
  * time in seconds since the chain was reset; FEATURE_INDEX * BIN_LEN /
  * SWEEP_HZ is a bin's. Both match the generics in argus_feature.vhd. */
@@ -74,6 +76,19 @@
 #define ARGUS_ACQ_FEATURE_HI(n)   (ARGUS_ACQ_FEATURE_BASE + 8u * (uint32_t)(n) + 4u)
 #define ARGUS_ACQ_FEAT_COUNT(hi)  ((uint16_t)((hi) >> 16))
 #define ARGUS_ACQ_FEAT_SUM(hi, lo) ((((uint64_t)(hi) & 0xFFFFu) << 32) | (uint64_t)(lo))
+
+/* LANE_SRC: two bits per lane, lane c in bits 2c+1:2c. MISO_DELAY: three
+ * bits per lane, lane c in bits 3c+2:3c, fabric clocks (8 ns) to delay
+ * that lane's MISO capture past the SCLK rising edge; the fabric clamps
+ * anything above 5. Both are latched as the chain leaves reset, so write
+ * them under CTRL.soft_reset. */
+#define ARGUS_ACQ_LANE_MODEL      0u
+#define ARGUS_ACQ_LANE_PINS       1u
+#define ARGUS_ACQ_LANE_OFF        2u   /* 3 is off as well */
+#define ARGUS_ACQ_LANES           (ARGUS_MAX_CHANNELS / ARGUS_ACQ_CH_PER_CHIP)
+#define ARGUS_ACQ_MISO_DELAY_MAX  5u
+#define ARGUS_ACQ_LANE_SRC_OF(v, lane)    (((v) >> (2u * (unsigned)(lane))) & 3u)
+#define ARGUS_ACQ_MISO_DELAY_OF(v, lane)  (((v) >> (3u * (unsigned)(lane))) & 7u)
 
 /* REPLAY_STATUS */
 #define ARGUS_ACQ_RS_PLAY_HALF    (1u << 0)

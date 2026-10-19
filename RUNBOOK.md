@@ -146,10 +146,11 @@ the one to read:
 
 ```
 Initializing Argus Safety Controller...
-acq id=41435133                       <- fabric revision ACQ3 matches firmware
+acq id=41435134                       <- fabric revision ACQ4 matches firmware
+acq lanes: src=00000000 miso_delay=00000000   <- every lane on the fabric's chip model
 acq status=00000001 frames/s=30012    <- sweep rate
 acq timing: reg 213 ns/read, 96-word frame read 22 us, sweep 33 us (read is held)
-acq frame 31652: [0]=00A3 [95]=9FA3 idx=A3 expect=A3 bad=0   <- identity pattern
+acq frame 31652:  lane0 model idx=a3 bad=0  lane1 model idx=a3 bad=0  lane2 model idx=a3 bad=0  expect=a3   <- identity pattern
 acq features: bin 21  ch0 count 0 power 2012  ch14 count 0 power 2012  dropped 0
 Configuring PHY for fixed 1000 Mbps mode
 link speed for phy address 1: 1000
@@ -169,7 +170,7 @@ stream: halves=1001 underruns=0 failures=0 next=147147 pl: half=0 row=4 c0=0 c1=
 stream: fetch avg=2329 max=8204 us (n=1001)  flush avg=417 max=418 us  rtx=0 to=0 rej=0
 stream: rx n=21042 copy avg=2 max=21 us  parse avg=77 max=208 us  loop iters=1753738 pkts=21022  gap avg=2155 max=2268 us (n=999)  con drop=0 max=89
 feat: bin 98 dropped 0  ch14 count 1 power 14140  ch75 count 1 power 9892
-acq frame 147006: [0]=7fb1 [95]=7f7f idx=b1 (ext) bad=96
+acq frame 147006 (ext):  lane0 model idx=b1 bad=32  lane1 model idx=.. bad=32  lane2 model idx=.. bad=32
 ```
 
 The first `stream:` line is the replay state: `next` is the dataset offset
@@ -185,11 +186,11 @@ messages dropped because the console ring was full (since boot), and `max` is th
 longest message in the interval. These lines are queued and drained into
 the UART without blocking (`argus_console.c`), so they no longer stall the
 loop.
-`dropped` stays 0 and power sits in the thousands. The frame line's `bad=96`
+`dropped` stays 0 and power sits in the thousands. The frame line's `bad=32` on every lane
 is the identity-pattern check running on real data — expected, not a fault.
 `tx` and `bin` differ by a few: `bin` restarts when streaming enters ext mode.
 
-The first line is the one that matters. `acq id=41435132  EXPECTED 41435133
+The first line is the one that matters. `acq id=41435133  EXPECTED 41435134
 -- stale bitstream?` means the platform still carries the previous fabric;
 the firmware then parks after `acq features: hold never took effect` and
 sends nothing. See the one-time Vitis section.
@@ -279,6 +280,6 @@ the nodes.
 | `The message type 'argus_core/msg/NeuralFrame' is invalid` | shell has base ROS but not the workspace overlay | `rosenv` in that shell |
 | `Package 'argus_inference' not found` with the package built | same | `rosenv` |
 | `Destination Host Unreachable` from ping | no route on the USB NIC | one-time network setup again |
-| `tx ... skipped N` with N > 0 | hold failing on the fabric | should not happen on ACQ3; report it |
+| `tx ... skipped N` with N > 0 | hold failing on the fabric | should not happen on ACQ4; report it |
 | `pgrep -af -- --ros-args` lists nodes before a run | a previous launch left a node alive | `kill` it; a stale relay still owns UDP 5010 |
 | Receiver `ver=` climbing, `ok=0` | host `argus_wire.h` behind the board's | sync from `argus_core`, rebuild `argus_sensors` |

@@ -10,6 +10,7 @@
 #include "argus_net.h"
 #include "argus_wire.h"
 #include "argus_acq.h"
+#include "argus_rig.h"
 #include "argus_replay.h"
 #include "argus_console.h"
 
@@ -153,48 +154,111 @@ static void acq_timing_report(void)
                (unsigned)reg_ns, (unsigned)frame_us);
 }
 
-/* Every word must carry its own chip and channel, and the whole frame must
- * share one sample index. That holds for both sources: the chips' built-in
- * IDENT pattern and the relay's synthetic one use the same layout.
+/* Words in one lane that do not carry that lane's identity pattern: chip
+ * number = lane in bits 15:14, channel in 13:8, and one sample index across
+ * the lane in 7:0. Each lane is judged against its own index, because a
+ * chip on the pins is not reset with the chain and its counter runs
+ * independently. An external chip passes only if it is strapped as the
+ * chip number of the lane it is plugged into. */
+static int acq_lane_bad(const uint16_t *frame, int lane, uint8_t *idx_out)
+{
+    const uint16_t *w = &frame[lane * ARGUS_ACQ_CH_PER_CHIP];
+    uint8_t idx = (uint8_t)(w[0] & 0xFFu);
+    int bad = 0;
+
+    for (int i = 0; i < ARGUS_ACQ_CH_PER_CHIP; i++) {
+        uint16_t want = (uint16_t)((lane << 14) | (i << 8) | idx);
+        if (w[i] != want) {
+            bad++;
+        }
+    }
+    if (idx_out != NULL) {
+        *idx_out = idx;
+    }
+    return bad;
+}
+
+/* Every lane's words must carry their own chip and channel and share one
+ * sample index. That holds for both sources: the chips' built-in IDENT
+ * pattern and the relay's synthetic one use the same layout.
  *
- * With the built-in source the index is the chips' sweep counter, which
- * must agree with the assembler's frame counter modulo 256. Frames dropped
- * during a hold do not break that: FRAME_INDEX carries the sweep number of
- * the frame in the bank, not a count of frames published. With the
- * external source the index is the dataset sample number and the
- * cross-check does not apply. */
+ * With the built-in source a model lane's index is the chips' sweep
+ * counter, which must agree with the assembler's frame counter modulo 256
+ * (expect= below). Frames dropped during a hold do not break that:
+ * FRAME_INDEX carries the sweep number of the frame in the bank, not a
+ * count of frames published. With the external source the index is the
+ * dataset sample number and the cross-check does not apply. Off lanes are
+ * not checked. */
 static void acq_frame_check(int ext)
 {
+    static const char *const src_name[4] = { "model", "pins", "off", "off" };
     uint16_t frame[ARGUS_MAX_CHANNELS];
     uint32_t fi;
+    uint32_t src = argus_acq_rd(ARGUS_ACQ_LANE_SRC);
 
     if (acq_read_frame(frame, &fi) != 0) {
         argus_console_printf("acq frame: hold never took effect\r\n");
         return;
     }
 
-    uint8_t idx = (uint8_t)(frame[0] & 0xFFu);
-    int bad = 0;
-    for (int n = 0; n < ARGUS_MAX_CHANNELS; n++) {
-        uint16_t want = (uint16_t)(((n / ARGUS_ACQ_CH_PER_CHIP) << 14)
-                                 | ((n % ARGUS_ACQ_CH_PER_CHIP) << 8)
-                                 | idx);
-        if (frame[n] != want) {
-            bad++;
-        }
-    }
+    argus_console_printf("acq frame %u%s:", (unsigned)fi, ext ? " (ext)" : "");
+    for (int lane = 0; lane < (int)ARGUS_ACQ_LANES; lane++) {
+        unsigned s = ARGUS_ACQ_LANE_SRC_OF(src, lane);
+        uint8_t idx;
 
-    if (ext) {
-        argus_console_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x (ext) bad=%d\r\n",
-                             (unsigned)fi, frame[0],
-                             ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
-                             idx, bad);
-    } else {
-        argus_console_printf("acq frame %u: [0]=%04x [%d]=%04x idx=%02x expect=%02x bad=%d\r\n",
-                             (unsigned)fi, frame[0],
-                             ARGUS_MAX_CHANNELS - 1, frame[ARGUS_MAX_CHANNELS - 1],
-                             idx, (unsigned)((fi - 1u) & 0xFFu), bad);
+        if (s >= ARGUS_ACQ_LANE_OFF) {
+            argus_console_printf("  lane%d off", lane);
+            continue;
+        }
+        int bad = acq_lane_bad(frame, lane, &idx);
+        argus_console_printf("  lane%d %s idx=%02x bad=%d", lane, src_name[s], idx, bad);
     }
+    if (!ext) {
+        argus_console_printf("  expect=%02x", (unsigned)((fi - 1u) & 0xFFu));
+    }
+    argus_console_printf("\r\n");
+}
+
+/* Restart the chain with the given lane configuration: under soft reset,
+ * so the fabric latches it as the chain starts, then enabled. Leaves
+ * ext_mode clear; argus_replay_stream_begin() sets it later. */
+static void acq_configure_lanes(uint32_t src, uint32_t delay)
+{
+    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_SOFT_RESET);
+    argus_acq_wr(ARGUS_ACQ_LANE_SRC, src);
+    argus_acq_wr(ARGUS_ACQ_MISO_DELAY, delay);
+    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE);
+}
+
+/* The MISO_DELAY calibration, on hardware: the same sweep tb_argus_acq_top
+ * runs in simulation. Every pins lane is read at each delay from 0 to 5,
+ * with the other lanes left as configured, and the wrong-word count for
+ * each is printed. A chip that answers inside the 24 ns half bit reads
+ * clean from 0; one at the end of a cable reads clean from 3 or so. Pick
+ * the middle of the clean run. Restores the configured lanes afterwards. */
+static void acq_miso_sweep(uint32_t src, uint32_t delay)
+{
+    uint16_t frame[ARGUS_MAX_CHANNELS];
+    uint32_t fi;
+
+    for (int lane = 0; lane < (int)ARGUS_ACQ_LANES; lane++) {
+        if (ARGUS_ACQ_LANE_SRC_OF(src, lane) != ARGUS_ACQ_LANE_PINS) {
+            continue;
+        }
+        xil_printf("acq miso sweep, lane %d:", lane);
+        for (uint32_t d = 0; d <= ARGUS_ACQ_MISO_DELAY_MAX; d++) {
+            uint32_t mask = 7u << (3u * (unsigned)lane);
+            acq_configure_lanes(src, (delay & ~mask) | (d << (3u * (unsigned)lane)));
+            usleep(2000);   /* init, about 30 us, then a few dozen sweeps */
+            if (acq_read_frame(frame, &fi) != 0) {
+                xil_printf("  %u:hold?", (unsigned)d);
+                continue;
+            }
+            xil_printf("  %u:%d", (unsigned)d, acq_lane_bad(frame, lane, NULL));
+        }
+        xil_printf("  (words wrong of 32 at each delay)\r\n");
+    }
+    acq_configure_lanes(src, delay);
 }
 
 /* Runs before the network stack on purpose: an AXI read against
@@ -220,7 +284,15 @@ static void acq_smoke_test(void)
                    (unsigned)id, (unsigned)ARGUS_ACQ_ID_EXPECT);
     }
 
-    argus_acq_wr(ARGUS_ACQ_CTRL, ARGUS_ACQ_CTRL_ENABLE);
+    /* Lanes first, under soft reset, so the chain starts with them. The
+     * rig's values come from argus_rig.h. */
+    acq_configure_lanes(ARGUS_LANE_SRC, ARGUS_MISO_DELAY);
+    xil_printf("acq lanes: src=%08x miso_delay=%08x\r\n",
+               (unsigned)argus_acq_rd(ARGUS_ACQ_LANE_SRC),
+               (unsigned)argus_acq_rd(ARGUS_ACQ_MISO_DELAY));
+#if ARGUS_MISO_SWEEP
+    acq_miso_sweep(ARGUS_LANE_SRC, ARGUS_MISO_DELAY);
+#endif
     usleep(50000);
 
     /* Measured with hold clear, so this is the true sweep rate. */
