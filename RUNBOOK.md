@@ -221,12 +221,15 @@ Then every 5 s three `stream:` lines, a `feat:` line and an `acq frame`
 line:
 
 ```
-stream: halves=1256 underruns=0 failures=0 next=184632 pl: half=1 row=19 c0=1 c1=0
-stream: fetch avg=1073 max=1288 us (n=1020)  flush avg=416 max=425 us  rtx=0 to=0 rej=0
-stream: rx n=21420 copy avg=2 max=7 us  parse avg=24 max=32 us  loop iters=7742 pkts=21420  gap avg=3407 max=4118 us (n=1021)  con drop=0 max=144
-feat: bin 123 dropped 0  ch14 count 2 power 13293  ch75 count 0 power 6726
-acq frame 184505: [0]=8217 [95]=8006 idx=17 (ext) bad=96
+stream: halves=2236 underruns=0 failures=0 next=331044 pl: half=0 row=118 c0=0 c1=0
+stream: fetch avg=1044 max=1497 us (n=1020)  flush avg=533 max=544 us  rtx=0 to=0 rej=0  ring min=15/16
+stream: rx n=21420 copy avg=2 max=10 us  parse avg=26 max=35 us  loop iters=6021 pkts=21420  gap avg=3853 max=4645 us (n=1020)  con drop=0 max=148
+feat: bin 219 dropped 0  ch14 count 1 power 10628  ch75 count 3 power 10732
+acq frame 328517: [0]=7e92 [95]=7f62 idx=92 (ext) bad=96
 ```
+
+(These five are from a v2.1 run at commit f9aa614; the boot lines above
+are from v2.0, and v2.1 prints them the same.)
 
 Line by line:
 
@@ -262,16 +265,23 @@ Line by line:
 - **`replay: req=1 rtx=0 ok=21 rej=0 to=0`**: one request, no
   retransmits, all 21 chunks accepted, none rejected, no timeouts.
 - **`stream: halves=... underruns=... failures=...`**: `halves` counts
-  BRAM halves filled since streaming began, `next` is the dataset offset of
-  the next fetch, and `pl:` is the half the PL is playing, its row, and
-  whether each half is waiting for a refill.
-- **`stream: fetch ...`**: per half, `fetch` is request to last chunk and
-  `flush` is the cache clean of the half before the ack. `rtx`, `to`, `rej`
-  are the replay client's counters since boot.
+  BRAM halves loaded into the PL since streaming began, `next` is the
+  dataset offset of the next fetch (up to 16 halves, 2352 samples, ahead of
+  what the PL plays, because of the read-ahead ring), and `pl:` is the half
+  the PL is playing, its row, and whether each half is waiting for a load.
+- **`stream: fetch ...`**: `fetch` is request to last chunk, per fetch,
+  and `flush` is loading a half into the PL (the copy out of the ring and
+  the cache clean) before the ack. `rtx`, `to`, `rej` are the replay
+  client's counters since boot. `ring min=15/16` is the fewest filled
+  slots of the read-ahead ring since the last report: 15 is a relay
+  keeping up (14 in the first report), each slot fewer is about 4.9 ms the
+  relay fell behind, and 0 means the ring ran dry (README.md, "Read-ahead",
+  has how to read it).
 - **`stream: rx ...`**: per datagram, `copy` out of the socket and `parse`
-  (checks, CRC, copy into the half); `loop iters` and `pkts` are the replay
-  task's wakeups and the datagrams they delivered; `gap` is the idle time
-  from one fetch finishing to the next request; `con drop` counts console
+  (checks, CRC, copy into the ring slot); `loop iters` and `pkts` are the
+  replay task's wakeups and the datagrams they delivered; `gap` is the time
+  from one fetch finishing to the next request, which with a full ring is
+  mostly waiting for the PL to free a slot; `con drop` counts console
   lines dropped whole because the ring was full (since boot), `max` the
   longest line in the interval.
 - **`feat:`**: the latest feature bin for two channels. `dropped` stays 0
@@ -282,7 +292,10 @@ external mode.
 
 **`underruns` is the number to watch over a long run.** It must stay 0
 while `halves` rises by about 1020 per report, which is real time. Real
-time needs fetch plus flush under 4.9 ms per half.
+time needs fetches to average well under 4.9 ms per half (they average
+about 1.0 ms); a single late answer is absorbed by the read-ahead ring as
+long as the relay is back within about 75 ms. `ring min` shows how much of
+that was used.
 
 **Receiver** (`[neural_udp_receiver-4]`):
 
@@ -309,11 +322,19 @@ second with `sample` advancing by 20 and an `intent -> vx wz` pair.
   cortex, simulated chips, SPI, crossings and spike-band power in fabric,
   UDP, DDS, LDA, `/cmd_vel` at 20.0 Hz. Telemetry is paced by the fabric's
   bin counter, so the rate is exact.
-- **Replay runs at real time with margin.** Five 90 s runs in a row and a
-  110 s run: 1020 to 1021 halves per report, underruns 0, failures 0,
-  rtx/to/rej 0. Fetch averages about 1.1 ms per half (the C's was about
-  2.3 ms) and parse 24 us per datagram (the C's 77); the clean is 417 us
-  in both. The C's ACQ4 baseline had one underrun in three 110 s runs.
+- **Replay runs at real time with margin, and rides out a late relay.**
+  v2.1 fetches up to 16 halves ahead into a ring in DDR. v2.0, which
+  fetched each half only after the PL had played it, had two underruns in
+  about 14 minutes on Oct 31, each from one fetch the host answered late
+  (4489 us and 4066 us). v2.1 at commit f9aa614: a 110 s bit-exact run and
+  three 300 s runs, 1020 to 1021 halves per report, underruns 0, failures
+  0, rtx/to/rej 0, `ring min` never below 14/16. With the relay process
+  stopped for 50 ms every 5 s (23 stalls in 150 s), still 0 underruns, the
+  ring drawn down to 5/16 or 6/16 each time; v2.0 under the same stalls had
+  110 underruns. Fetch averages about 1.0 ms per half (the C's was about
+  2.3 ms) and parse about 25 us per datagram (the C's 77); loading a half
+  (copy and clean) takes about 533 us, of which the clean is the 417 us it
+  was in v2.0 and the C.
 - **Telemetry is clean.** 1858 frames in the 110 s run with `crc=0` and
   size/magic/ver 0; the C build lost one or two frames per run on ACQ4 to a
   bad CRC. Each frame is copied into a GEM transmit buffer that the HAL
@@ -323,9 +344,10 @@ second with `sample` advancing by 20 and an `intent -> vx wz` pair.
 - **The codec is bit-exact on silicon.** `argus_sim/tools/hw_bitexact.py`
   matched every count and power in 1450 of 1450 bins against
   `spike_features.py`.
-- **Caveats.** The largest stall on the executor is the cache clean of a
-  half, about 420 us; the worst fetch seen (2451 us) still left about
-  0.8 ms of the 4.9 ms half. Console lines are not printed the moment they
+- **Caveats.** The largest stall on the executor is loading a half, about
+  530 us. The ring covers about 75 ms of a silent relay; a host that
+  stalls for longer will still cause underruns, which are counted, and
+  the stream recovers in order. Console lines are not printed the moment they
   are queued; a line that does not fit in the ring is dropped whole and
   counted in `con drop` (0 so far). Power is on the wire at frame version
   3; a v2 host shows up as a climbing `ver=` on the receiver.
@@ -356,7 +378,8 @@ pulling the USB cable: pulling it under a live session wedges XSDB.
 | `telemetry: unsent ...` climbing after the link is up | the host is not resolving | `ip route get 192.168.1.10`; host address 192.168.1.20 |
 | `replay FAILED` with `to=` nonzero, `ok=0` | requests leave, no replies: relay not running, firewall, VPN route | start the relay first; `sudo ufw status`; disconnect NordVPN |
 | `replay FAILED` with `rej=` nonzero | replies arrive but are rejected | `chunk_total` or `channel_count` mismatch between relay and firmware |
-| `underruns` climbing | fetches slower than 4.9 ms per half | the `stream: fetch` and `gap` figures; a second relay answering (`pgrep -af -- --ros-args`) |
+| `underruns` climbing | the ring ran dry: `ring min=0/16`, the relay silent for more than about 75 ms or fetches averaging more than 4.9 ms per half | the `stream: fetch` figures and `ring min`; a host process stalling the relay; a second relay answering (`pgrep -af -- --ros-args`) |
+| `ring min` well below 15/16 without underruns | the relay answered late, and the ring covered it | nothing to fix if it is rare; `fetch max` in the same line says how late |
 | `panic: ... at <file>:<line>` | a bug; the core parks | the file and line name it |
 | `fault: data abort at <addr>` | a bad memory access; the core parks | `addr` is the faulting instruction; look it up in the ELF |
 | `WARNING: replay clock advanced 0 ms` | the global timer is not running | retransmits never fire; check `clk: gtc=` |

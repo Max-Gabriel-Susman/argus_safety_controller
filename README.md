@@ -43,11 +43,13 @@ In order, as the C firmware did:
    192.168.1.10/24, gateway 192.168.1.1, MAC 00:0a:35:00:01:02, 1000 Mb/s.
 3. Fetches one replay half (147 samples x 96 channels) from the relay at
    192.168.1.20:5010 into DDR and prints four samples of it, then starts
-   streaming the dataset into the PL's replay BRAM ping-pong.
+   streaming the dataset into the PL's replay BRAM ping-pong, through a
+   read-ahead ring of 16 halves in DDR ([below](#read-ahead)).
 4. Runs, as Embassy tasks: for every new feature bin (one per 50 ms), reads
    the bin under the fabric's hold and sends one v3 telemetry frame to
-   192.168.1.20:5005; refills each BRAM half the PL has finished playing
-   (one every 4.9 ms); and prints the status lines.
+   192.168.1.20:5005; keeps the ring fetched ahead and loads each BRAM half
+   the PL has finished playing (one every 4.9 ms) from it; and prints the
+   status lines.
 
 Where the Rust has to differ from the C (tasks instead of a superloop,
 smoltcp instead of lwIP), it keeps what can be observed: the register
@@ -64,7 +66,7 @@ target).
 | --- | --- |
 | `argus-wire` | The wire contract: CRC-16/CCITT-FALSE, the packet structs generated from `argus_wire.h` by `rust/tools/gen-wire.sh`, and the telemetry frame encoder. |
 | `argus-replay` | The replay client protocol, ported from `argus_replay_client.h`: requests, chunk checks, retransmit of the first gap, timeouts. It reaches the network and the destination buffer only through traits. |
-| `argus-fw-core` | Everything the firmware decides rather than touches: the register fields, the feature arithmetic, the console ring, the PHY driver over an MDIO trait, the stream state machine over a PL trait, and the exact text of every console line. |
+| `argus-fw-core` | Everything the firmware decides rather than touches: the register fields, the feature arithmetic, the console ring, the PHY driver over an MDIO trait, the stream state machine over a PL trait, the read-ahead ring's bookkeeping, and the exact text of every console line. |
 | `argus-difftest` | Host-only tests that compile the C replay client and the C frame packing and drive them beside the Rust, step for step, over seeded random scenarios. |
 | `argus-fw` | The binary: HAL setup, the acquisition register block, the MMU remap and cache maintenance, the Embassy tasks, and the glue between them. |
 
@@ -100,12 +102,13 @@ The tasks in `argus-fw`, all on one Embassy executor:
 | stack runner | `net.rs` | The embassy-net runner: frames between the GEM and smoltcp. |
 | link | `net.rs` | Polls the PHY every 100 ms, sets the link state and the GEM's speed, prints `eth:` lines. |
 | telemetry | `telemetry.rs` | Waits for FEATURE_INDEX to change, reads the bin under hold, sends the frame; prints the `tx`, `feat:` and acq frame lines. |
-| replay | `replay.rs` | The one-shot fetch, then the stream: the client over a UDP socket, halves into BRAM, clean, ack; answers the telemetry task's request for the `stream:` lines. |
+| replay | `replay.rs` | The one-shot fetch, then the stream: the client over a UDP socket, halves into the read-ahead ring, then each into BRAM (copy, clean, ack); answers the telemetry task's request for the `stream:` lines. |
 
 No task may hold the executor for more than about 100 us, because a BRAM
 half lasts 4.9 ms and a blocking print of the status block is what caused
-the C firmware's last underruns. The one known exception is the cache clean
-of a half (about 420 us), which has not caused an underrun.
+the C firmware's last underruns. The one known exception is loading a half
+into the PL (the 28 KB copy out of the ring and the cache clean, about
+530 us), which has not caused an underrun.
 
 ## Building
 
@@ -224,7 +227,7 @@ Lines marked *new* have no C equivalent.
 | telemetry (*new*) | `telemetry: unsent link down <n> refused <m>`, when sending resumes after frames were dropped (before the link is up, say) |
 | every 20 frames | `tx %u bin %u skipped %u` |
 | every 100 frames | `stream: halves=%u underruns=%u failures=%u next=%u pl: half=%u row=%u c0=%u c1=%u` |
-| next | `stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us  rtx=%u to=%u rej=%u` |
+| next | `stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us  rtx=%u to=%u rej=%u  ring min=%u/%u` (`ring min` is *new* in v2.1) |
 | next | `stream: rx n=%u copy avg=%u max=%u us  parse avg=%u max=%u us  loop iters=%u pkts=%u  gap avg=%u max=%u us (n=%u)  con drop=%u max=%u` |
 | next | `feat: bin %u dropped %u  ch14 count %u power %u  ch75 count %u power %u`, then the acq frame line |
 | on a panic (*new*) | `panic: <message> at <file>:<line>` |
@@ -232,10 +235,16 @@ Lines marked *new* have no C equivalent.
 
 `halves`, `underruns` and `failures` count from the start of streaming;
 the replay client's `rtx`, `to` and `rej` count from boot; the timing
-figures reset at each report. In the `stream: rx` line, `copy` is moving a
-datagram out of the socket, `parse` is the client's checks, CRC and copy
-into the half, and `loop iters` and `pkts` are the replay task's wakeups
-and the datagrams they delivered. All times come from the global timer at
+figures reset at each report. `halves` is the halves loaded into the PL,
+and `next` the dataset offset of the next fetch, up to a ring's worth
+ahead of what the PL plays. In the `stream: fetch` line, `fetch` is
+request to last chunk per fetch, `flush` is loading a half into the PL
+(the copy out of the ring and the cache clean), and `ring min` is the
+fewest filled ring slots seen since the last report, out of the ring's
+size. In the `stream: rx` line, `copy` is moving a datagram out of the
+socket, `parse` is the client's checks, CRC and copy into the ring slot,
+and `loop iters` and `pkts` are the replay task's wakeups and the
+datagrams they delivered. All times come from the global timer at
 the rate its registers say (325 MHz on this board); the C assumed 333 MHz,
 so its microsecond figures read about 2.5% low.
 
@@ -247,7 +256,109 @@ counts, the 96 powers (the 48-bit sum of squares divided by 1500), and a
 CRC-16/CCITT-FALSE over bytes 0 to 591. A frame goes out when FEATURE_INDEX
 changes, never on a timer, so the rate is the fabric's.
 
-## Measured on the board
+## Read-ahead
+
+**Why.** v2.0 refilled a BRAM half only after the PL had played it, and
+fetched straight into it: one fetch in flight and nothing buffered beyond
+the ping-pong. A half plays for 4.9 ms, so the fetch and the cache clean
+had to land within about 4.4 ms of the PL flipping out of the half. A fetch
+takes about 1.0 ms on average, but the relay runs on ordinary desktop Linux
+and now and then answers late. On Oct 31, three runs of v2.0 (about 14
+minutes) had two underruns, each from one slow fetch (4489 us and 4066 us
+in those reports, with rtx, to and rej all 0), once with the decoder
+running on the workstation and once without. Nothing was lost on the wire;
+the host was simply late, and v2.0 had no slack to absorb it.
+
+**What it does.** v2.1 fetches ahead into a ring of 16 halves in DDR and
+loads each half the PL frees from the ring:
+
+- The ring's bookkeeping (which slot is oldest, how many are filled, the
+  lowest fill since the last report) is `argus_fw_core::ring`, with no
+  storage. The size is named once, `ring::SLOTS = 16`.
+- The storage is 16 x 28,224 = 451,584 bytes of ordinary cached DDR in
+  `argus-fw` (`replay.rs`). Only the CPU touches it, so it needs no cache
+  maintenance; it is all zeros, so it lands in .bss and the ELF does not
+  grow.
+- The stream (`argus_fw_core::stream`) primes by fetching until the ring is
+  full, loads the two oldest halves into half 0 and half 1, puts the PL
+  into external mode and runs. On every pass it first counts and acks an
+  underrun, then loads any half the PL has consumed from the oldest slot
+  and acks it, and only then sees to the fetch side: a completed fetch
+  becomes the newest slot, a failed one is retried at the same offset into
+  the same slot, and with nothing in flight and a slot free the next fetch
+  starts. The PL's deadline comes first because it is the hard one; a fetch
+  has the ring's slack.
+- Loading a half is a `copy_from_slice` from the slot into the BRAM half,
+  then the same cache clean v2.0 did. It takes about 530 us (v2.0's clean
+  alone took about 420 us); it is reported as `flush`.
+- The PL still gets the dataset strictly in order, sample 0 first, each
+  half the 147 samples after the last, never a slot skipped or loaded
+  twice. Bit-exactness depends on it, and the host tests hold the stream to
+  it over hundreds of halves against a fake PL that flips the way the
+  gateware does.
+
+**What the ring covers.** In steady running the ring sits at 15 of 16:
+the slot the last load freed is being refilled. Fifteen halves of 4.9 ms
+are about 75 ms of play, so the relay can go silent for about 75 ms without
+an underrun. Measured, one 50 ms stall drew the ring down by 10 or 11
+halves (to 5 or 6), leaving about 5 halves (about 24 ms) in hand. A host
+that stalls for longer than about 75 ms will still cause underruns; then
+the stream counts them and recovers in order, as v2.0 did.
+
+**Reading `ring min`.** The last field of the `stream: fetch` line,
+`ring min=<m>/16`, is the fewest filled slots seen since the last report.
+
+- `15/16` is a relay keeping up. The first report after priming reads
+  `14/16`, because it includes the start of running.
+- Each slot below 15 is about 4.9 ms by which the relay fell behind during
+  that report; `fetch max` in the same line says how late the slowest
+  answer was. A 50 ms stall shows as `5/16` or `6/16` with `fetch max`
+  around 47000 to 51000 us.
+- `0/16` means the ring ran dry: the PL was given the last half the ring
+  held, and one more late fetch would have been an underrun.
+
+Underruns are still the number that must stay 0; `ring min` says how close
+a run came.
+
+**One deliberate narrowing.** After an underrun both BRAM halves can be
+flagged consumed while the PL plays one of them stale. The stream loads
+only the half the PL is not playing; the other waits until the PL leaves it.
+The fabric flags a half consumed every time it flips out of it, so loading
+and acking the half it is playing would get it flagged again and loaded
+over before its samples were played, a skip in the dataset.
+
+### Measured on the board: v2.1
+
+ACQ4 fabric, firmware at commit f9aa614, Oct 31 2026.
+
+| Run | Result |
+| --- | --- |
+| Bit-exact, 110 s | `hw_bitexact.py` 1450 of 1450 bins exact; 18563 halves, underruns 0, failures 0, rtx/to/rej 0; 1853 telemetry frames, none rejected |
+| Three ordinary 300 s runs (15 minutes) | 57359, 57400 and 57379 halves; underruns 0, failures 0, rtx/to/rej 0 in all three |
+| Relay stopped for 50 ms every 5 s, 150 s | 23 stalls (longest 59.9 ms); 26951 halves, underruns 0, failures 0, rtx/to/rej 0 |
+| v2.0 under the same stalls, for comparison | 11 stalls, 110 underruns (about ten halves per stall), 1013 halves per report |
+
+The stall test stops the relay process (SIGSTOP) for 50 ms every 5 s,
+starting 35 s into the run once the stream is going, then lets it carry on
+(SIGCONT): a workstation that answers late, on purpose. A stall of up to
+150 ms stays under the replay client's 200 ms timeout, so it delays a fetch
+without causing a retransmit, which is why rtx and to stay 0.
+
+| | v2.1 | v2.0 |
+| --- | --- | --- |
+| Halves per 5 s report | 1020 to 1021 (1021 under stalls) | 1020 |
+| Fetch per half, avg / max (us) | 1020 to 1123 / 1143 to 3453 | about 1013 / up to 4489 |
+| Fetch max under the 50 ms stalls (us) | 46123 to 51055 | 47547 |
+| Load (`flush`) per half, avg / max (us) | 532 to 535 / 542 to 560 (about 700 in the first report) | 417 / 424 (the clean alone) |
+| `ring min` | 15/16 after the first report, 14/16 in it; 5/16 or 6/16 in stalled reports | (no ring) |
+| Gap between fetches, avg / max (us) | about 3840 / 4653 | about 3390 / 4118 |
+
+In the ordinary runs the slowest fetches (2.9 to 3.5 ms) came about once a
+minute and cost the ring one slot at most. The gap is longer than v2.0's
+because it includes waiting for a slot to free up, which with a full ring
+is most of a half.
+
+## Measured on the board: v2.0
 
 ACQ4 fabric, firmware at commit f947216, Oct 31 2026.
 
@@ -314,4 +425,7 @@ with it: all of them parse the same frames.
   peripherals) and programmable logic (the fabric).
 - **Half**: one of the two 147-sample regions of the replay BRAM. The PL
   plays one while the PS refills the other.
+- **Ring, slot**: the read-ahead ring, 16 halves in DDR fetched ahead of
+  the PL; a slot is one of them. Fetches fill slots in order and the PL is
+  loaded from the oldest.
 - **Bin**: one 50 ms feature window (1500 samples at 30012 Hz).
