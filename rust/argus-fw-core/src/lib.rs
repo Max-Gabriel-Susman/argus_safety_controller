@@ -15,6 +15,8 @@
 //!   it, reset it, autonegotiate and read back the link.
 //! - [`replay`]: where the relay is, the client's configuration and the
 //!   one-shot fetch's console lines.
+//! - [`ring`]: the read-ahead ring's bookkeeping, which slots hold
+//!   fetched halves and which the PL gets next, and its size, [`ring::SLOTS`].
 //! - [`stream`]: the streaming state machine that keeps the PL's
 //!   ping-pong BRAM fed, over a PL trait, and its status lines.
 //! - [`telemetry`]: the v3 frame each feature bin becomes, and the count
@@ -31,6 +33,7 @@ pub mod console;
 pub mod lines;
 pub mod phy;
 pub mod replay;
+pub mod ring;
 pub mod stream;
 pub mod telemetry;
 pub mod timing;
