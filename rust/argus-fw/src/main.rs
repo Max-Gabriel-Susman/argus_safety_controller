@@ -131,8 +131,9 @@ async fn main(spawner: Spawner) -> ! {
         let task = replay::socket(stack)
             .zip(argus_fw_core::replay::client())
             .zip(bram)
-            .and_then(|((socket, client), bram)| {
-                replay::replay(stack, socket, client, acq, bram).ok()
+            .zip(replay::ring())
+            .and_then(|(((socket, client), bram), ring)| {
+                replay::replay(stack, socket, client, acq, bram, ring).ok()
             });
         match task {
             Some(task) => spawner.spawn(task),

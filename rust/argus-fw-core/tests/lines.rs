@@ -352,30 +352,37 @@ fn stream_fetch() {
     // argus_console_printf("stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us"
     //     "  rtx=%u to=%u rej=%u\r\n", fetch_n ? fetch_sum / fetch_n : 0, fetch_max,
     //     fetch_n, flush_n ? flush_sum / flush_n : 0, flush_max, rtx, to, rej);
-    // From the C firmware's ACQ4 baseline, 2026-10-31.
+    // v2.1 appends "  ring min=%u/%u" to the C's line.
+    // The figures from the C firmware's ACQ4 baseline, 2026-10-31.
     let line = StreamFetch {
         fetch: timing_of(1020, 2_391_900, 3515),
         flush: timing_of(1020, 425_340, 418),
         retransmits: 0,
         timeouts: 0,
         rejected: 0,
+        ring_min: 15,
+        ring_slots: 16,
     };
     assert_eq!(
         line.to_string(),
-        "stream: fetch avg=2345 max=3515 us (n=1020)  flush avg=417 max=418 us  rtx=0 to=0 rej=0\r\n"
+        "stream: fetch avg=2345 max=3515 us (n=1020)  flush avg=417 max=418 us  rtx=0 to=0 rej=0  \
+         ring min=15/16\r\n"
     );
 
-    // Nothing recorded: the averages are 0, not a division by zero.
+    // Nothing recorded: the averages are 0, not a division by zero. A ring
+    // drawn dry reads 0.
     let line = StreamFetch {
         fetch: Timing::new(),
         flush: Timing::new(),
         retransmits: 2,
         timeouts: 1,
         rejected: 3,
+        ring_min: 0,
+        ring_slots: 16,
     };
     assert_eq!(
         line.to_string(),
-        "stream: fetch avg=0 max=0 us (n=0)  flush avg=0 max=0 us  rtx=2 to=1 rej=3\r\n"
+        "stream: fetch avg=0 max=0 us (n=0)  flush avg=0 max=0 us  rtx=2 to=1 rej=3  ring min=0/16\r\n"
     );
 }
 

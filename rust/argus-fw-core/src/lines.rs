@@ -712,14 +712,16 @@ impl Display for StreamHalves {
 }
 
 /// `stream: fetch avg=%u max=%u us (n=%u)  flush avg=%u max=%u us  rtx=%u
-/// to=%u rej=%u`: where a half's time goes since the last report, and the
-/// client's loss counters since boot. A fetch near 200000 us is a
-/// retransmit timeout.
+/// to=%u rej=%u  ring min=%u/%u`: where a half's time goes since the last
+/// report, the client's loss counters since boot, and how far the read-ahead
+/// ring was drawn down since the last report. A fetch near 200000 us is a
+/// retransmit timeout. The `ring min` field is new in v2.1; the rest is the
+/// C's line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamFetch {
-    /// Request sent to last chunk in, per half.
+    /// Request sent to last chunk in, per fetch.
     pub fetch: Timing,
-    /// The cache clean of a half.
+    /// Loading a half into the PL: the copy from the ring and the clean.
     pub flush: Timing,
     /// The client's retransmits since boot.
     pub retransmits: u32,
@@ -727,13 +729,18 @@ pub struct StreamFetch {
     pub timeouts: u32,
     /// The client's rejected datagrams since boot.
     pub rejected: u32,
+    /// The fewest filled ring slots since the last report.
+    pub ring_min: usize,
+    /// The ring's size, in halves.
+    pub ring_slots: usize,
 }
 
 impl Display for StreamFetch {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "stream: fetch avg={} max={} us (n={})  flush avg={} max={} us  rtx={} to={} rej={}\r\n",
+            "stream: fetch avg={} max={} us (n={})  flush avg={} max={} us  rtx={} to={} rej={}  \
+             ring min={}/{}\r\n",
             self.fetch.avg(),
             self.fetch.max(),
             self.fetch.n(),
@@ -741,7 +748,9 @@ impl Display for StreamFetch {
             self.flush.max(),
             self.retransmits,
             self.timeouts,
-            self.rejected
+            self.rejected,
+            self.ring_min,
+            self.ring_slots
         )
     }
 }

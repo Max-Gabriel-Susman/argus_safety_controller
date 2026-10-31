@@ -8,9 +8,12 @@
 //! (offset 0, 147 samples) is fetched into a DDR buffer and the `replay ok:`
 //! (or `replay FAILED`) and `replay: req=` lines are printed, as `main.c`
 //! does before it starts streaming. Then the task streams for good: the
-//! state machine in [`argus_fw_core::stream`] primes both BRAM halves,
-//! switches the chain to the external source and refills whichever half
-//! the PL has consumed, the chunks landing straight in the BRAM.
+//! state machine in [`argus_fw_core::stream`] fills the read-ahead ring
+//! ([`RING`], [`SLOTS`] halves in DDR), loads the two oldest into the BRAM
+//! halves, switches the chain to the external source, then loads each half
+//! the PL consumes from the ring while fetching ahead into the slots that
+//! frees. The chunks land in the ring slot being fetched; only loading a
+//! half copies into the BRAM.
 //!
 //! What changed from the C, and why:
 //!
@@ -38,6 +41,7 @@ use argus_fw_core::acq::ReplayStatus;
 use argus_fw_core::acq::bram::HALF_BYTES;
 use argus_fw_core::lines::{INITIALIZED, REPLAY_FAILED, REPLAY_NEVER_SENT, STREAM_PRIMING};
 use argus_fw_core::replay::{self, LOCAL_PORT, RELAY_ADDRESS, SAMPLES_PER_HALF};
+use argus_fw_core::ring::SLOTS;
 use argus_fw_core::stream::{Clock, Fetch, Half, Pl, ReportInputs, RxStats, Stream, StreamReport};
 use argus_replay::{Client, FetchError, State, Transport};
 use argus_wire::generated::{
@@ -97,8 +101,23 @@ static TX_BUFFER: ConstStaticCell<[u8; TX_REQUESTS * REQUEST_BYTES]> =
     ConstStaticCell::new([0; TX_REQUESTS * REQUEST_BYTES]);
 
 /// The C's `g_fetch_buf`: one half in DDR, for the one-shot fetch only.
-/// Streaming fetches land in the BRAM directly.
+/// Streaming fetches land in [`RING`].
 static FETCH_BUFFER: ConstStaticCell<[u8; HALF_BYTES]> = ConstStaticCell::new([0; HALF_BYTES]);
+
+/// The read-ahead ring's storage: [`SLOTS`] halves, indexed by the slot
+/// numbers the stream hands out.
+pub type RingHalves = [[u8; HALF_BYTES]; SLOTS];
+
+/// The ring itself, 451,584 bytes of ordinary cached DDR. Only the CPU
+/// touches it (the client writes chunks in, loading a half copies one out),
+/// so it needs no cache maintenance; the clean happens on the BRAM side.
+/// All zeros, so it lands in .bss and the ELF does not grow.
+static RING: ConstStaticCell<RingHalves> = ConstStaticCell::new([[0; HALF_BYTES]; SLOTS]);
+
+/// The ring's storage, the first time this is called; `None` after that.
+pub fn ring() -> Option<&'static mut RingHalves> {
+    RING.try_take()
+}
 
 /// The replay socket, bound to port 5011 as `argus_replay_init()` binds
 /// `g_pcb`. `None` when called a second time or when the port is taken.
@@ -164,7 +183,7 @@ fn now_us() -> u32 {
 }
 
 /// The replay task: the one-shot fetch once the network is ready, then
-/// streaming into the BRAM for good.
+/// streaming through `ring` into the BRAM for good.
 #[embassy_executor::task]
 pub async fn replay(
     stack: Stack<'static>,
@@ -172,6 +191,7 @@ pub async fn replay(
     mut client: Client,
     acq: &'static SharedAcq,
     mut bram: ReplayBram,
+    ring: &'static mut RingHalves,
 ) -> ! {
     stack.wait_link_up().await;
     telemetry::HOST_REACHED.wait().await;
@@ -180,7 +200,7 @@ pub async fn replay(
         one_shot(&socket, &mut client, half).await;
     }
 
-    stream(&socket, &mut client, acq, &mut bram).await
+    stream(&socket, &mut client, acq, &mut bram, ring).await
 }
 
 /// `main.c`'s one-shot fetch into DDR: proves the host to PS path before
@@ -251,10 +271,12 @@ pub async fn stream_report() -> Option<StreamReport> {
     with_timeout(REPORT_WAIT, REPORT.wait()).await.ok()
 }
 
-/// The stream's PL: the replay registers and the BRAM's cache clean.
+/// The stream's PL: the replay registers, the BRAM and the ring it is
+/// loaded from.
 struct Fabric<'a> {
     acq: &'a mut Acq,
-    bram: &'a ReplayBram,
+    bram: &'a mut ReplayBram,
+    ring: &'a RingHalves,
 }
 
 impl Pl for Fabric<'_> {
@@ -270,7 +292,14 @@ impl Pl for Fabric<'_> {
         self.acq.write_ctrl(value);
     }
 
-    fn clean_half(&mut self, half: Half) {
+    /// A 28 KB copy into the write-back aperture, then the clean that
+    /// writes it out to the BRAM: about 0.5 ms, the longest thing this task
+    /// does per half.
+    fn load_half(&mut self, half: Half, slot: usize) {
+        // The stream only names slots below SLOTS, and there are two halves.
+        if let (Some(src), Some(dst)) = (self.ring.get(slot), self.bram.half(half)) {
+            dst.copy_from_slice(src);
+        }
         // Fails only for a range that is not whole cache lines, and the
         // halves are (checked at compile time in argus-fw-core).
         let _ = self.bram.clean(half);
@@ -312,7 +341,7 @@ impl Clock for Micros {
 ///
 /// Each pass waits up to [`SERVICE_PERIOD`] for a datagram, takes every
 /// datagram the socket holds and hands each to the client, landing it in
-/// the half in flight; then polls the client for its deadline, moves the
+/// the ring slot in flight; then polls the client for its deadline, moves the
 /// stream on by a step, and answers a report request. That is the C's
 /// superloop order: `xemacif_input()`, then `argus_replay_stream_service()`
 /// (whose first act is `argus_replay_service()`).
@@ -326,6 +355,7 @@ async fn stream(
     client: &mut Client,
     acq: &'static SharedAcq,
     bram: &mut ReplayBram,
+    ring: &mut RingHalves,
 ) -> ! {
     let mut stream = Stream::new();
     let mut rx_stats = RxStats::new();
@@ -358,8 +388,8 @@ async fn stream(
             };
             // Between fetches the client ignores what arrives, so the
             // empty slice is never written.
-            let sink = match stream.in_flight().and_then(|half| bram.half(half)) {
-                Some(half) => half.as_mut_slice(),
+            let sink = match stream.in_flight().and_then(|slot| ring.get_mut(slot)) {
+                Some(slot) => slot.as_mut_slice(),
                 None => &mut [],
             };
             client.on_packet(datagram, sink);
@@ -377,6 +407,7 @@ async fn stream(
         let mut fabric = Fabric {
             acq: &mut acq,
             bram,
+            ring,
         };
         stream.service(&mut fabric, &mut Fetcher { client, socket }, &Micros);
 

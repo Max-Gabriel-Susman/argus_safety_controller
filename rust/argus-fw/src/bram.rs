@@ -2,9 +2,9 @@
 //!
 //! Unlike the registers, the BRAM is plain memory: reading it has no side
 //! effects, and the PL only reads it, through its own port. So it is safe
-//! to hand out ordinary Rust references to it, and the replay client can
-//! copy a chunk into a half with `copy_from_slice`, which is the C's
-//! `memcpy` into `ARGUS_BRAM_HALF(h)`.
+//! to hand out ordinary Rust references to it, and a half is loaded from
+//! the read-ahead ring with `copy_from_slice`, as the C's `memcpy` into
+//! `ARGUS_BRAM_HALF(h)` put each chunk there.
 //!
 //! The HAL maps the aperture strongly ordered, like all of the PL: no write
 //! merging, so a half's copy would be 14112 single-beat AXI writes, and an
@@ -66,7 +66,7 @@ impl ReplayBram {
         Some(Self { halves })
     }
 
-    /// `half`, for the replay client to fill.
+    /// `half`, to load from the read-ahead ring.
     pub fn half(&mut self, half: Half) -> Option<&mut [u8; HALF_BYTES]> {
         self.halves.get_mut(half.index())
     }
