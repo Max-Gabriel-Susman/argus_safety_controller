@@ -8,8 +8,11 @@
 # What gets loaded, each part overridable:
 #
 #   ARGUS_ELF     the ELF to run. Default: the Rust firmware's release build,
-#                 rust/target/armv7a-none-eabihf/release/argus-fw, when this
-#                 checkout has one; otherwise the Vitis app's build output.
+#                 rust/target/armv7a-none-eabihf/release/argus-fw, which
+#                 rust/tools/build-fw.sh makes. Without it the script stops:
+#                 an old Vitis build of the C application may still sit in
+#                 safety_controller/build, and loading that by default would
+#                 run the wrong firmware without a word.
 #   ARGUS_XSA     an exported XSA: the bitstream and ps7_init.tcl are taken
 #                 out of it, so no Vitis platform build is needed.
 #   ARGUS_HW_DIR  a checkout whose Vitis platform build supplies the
@@ -36,7 +39,6 @@ fi
 VITIS_BIT=safety_controller/_ide/bitstream/argus_neural_codec.bit
 VITIS_XSA=arty_z7_platform/export/arty_z7_platform/hw/argus_neural_codec.xsa
 VITIS_INIT=safety_controller/_ide/psinit/ps7_init.tcl
-VITIS_ELF=safety_controller/build/safety_controller.elf
 RUST_ELF=rust/target/armv7a-none-eabihf/release/argus-fw
 C_CHECKOUT=$HOME/Documents/argus_safety_controller
 CODEC_XSA=$HOME/Documents/argus-neural-codec/argus_neural_codec.xsa
@@ -44,10 +46,12 @@ CODEC_XSA=$HOME/Documents/argus-neural-codec/argus_neural_codec.xsa
 # --- the ELF ----------------------------------------------------------------
 if [ -n "${ARGUS_ELF:-}" ]; then
   elf=$ARGUS_ELF
-elif [ -f "$REPO/$RUST_ELF" ]; then
-  elf=$REPO/$RUST_ELF
 else
-  elf=$REPO/$VITIS_ELF
+  elf=$REPO/$RUST_ELF
+  if [ ! -f "$elf" ]; then
+    echo "program.sh: missing $elf; build it with rust/tools/build-fw.sh, or set ARGUS_ELF"
+    exit 1
+  fi
 fi
 
 # --- bitstream, hardware description, PS init ---------------------------------
