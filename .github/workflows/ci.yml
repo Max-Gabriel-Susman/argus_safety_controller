@@ -142,6 +142,15 @@ jobs:
           cargo build --locked --release --target "$TARGET"
           -p argus-wire -p argus-replay -p argus-fw-core
 
+      # The firmware itself: the binary, linked with zynq7000-rt's script
+      # against the pinned zynq7000-rs revision. Without these two steps a
+      # change that breaks only argus-fw would still pass.
+      - name: Clippy (cortex-a9, argus-fw)
+        run: cargo clippy --locked --target "$TARGET" -p argus-fw -- -D warnings
+
+      - name: Build (cortex-a9, argus-fw)
+        run: cargo build --locked --release --target "$TARGET" -p argus-fw
+
       - name: Rustdoc
         run: cargo doc --locked --no-deps
         env:
