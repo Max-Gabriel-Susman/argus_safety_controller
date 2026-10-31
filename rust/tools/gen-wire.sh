@@ -43,7 +43,14 @@ trap 'rm -f "$fresh"' EXIT
 # header's /* field comments */ into doc comments on the Rust fields.
 # --rust-target 1.85 is the oldest Rust that knows edition 2024, which
 # --rust-edition asks for to match the workspace.
-bindgen "$header" \
+#
+# bindgen takes clang's target from $TARGET when the command line names
+# none. Cargo sets it for build scripts, and CI's rust job sets it to the
+# A9 triple, where clang has no C library headers (no assert.h). So bindgen
+# runs without it and always generates for the host, as the committed file
+# was. The packed, fixed-width layout is the same on both; the wire ABI job
+# checks the header's static_asserts under each compiler.
+env -u TARGET bindgen "$header" \
     --use-core \
     --rust-target 1.85 \
     --rust-edition 2024 \
